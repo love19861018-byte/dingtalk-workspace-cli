@@ -3,6 +3,10 @@
 **One CLI for all of DingTalk Workspace — built for humans and AI agents.**<br>
 Access contacts, calendar, todos, attendance, AI tables and more with zero boilerplate, get structured JSON responses ready for automation, and leverage built-in Agent Skills for seamless AI integration.
 
+<p align="center">
+  <img src="https://img.alicdn.com/imgextra/i1/O1CN01oKAc2r28jOyyspcQt_!!6000000007968-2-tps-4096-1701.png" alt="DWS Product Overview" width="100%">
+</p>
+
 > [!IMPORTANT]
 > **Co-creation Phase**: This project accesses DingTalk enterprise data and requires enterprise admin authorization. We are currently in a gray-scale co-creation phase. Please join the DingTalk DWS co-creation group and provide the following materials to the official staff for whitelist configuration: ① Your DingTalk application's Client ID; ② Confirmation from the enterprise admin to enable access. Self-service approval by enterprise admins will be supported in the future.
 >
@@ -186,7 +190,7 @@ Tokens are encrypted at rest using **PBKDF2 (600,000 iterations) + AES-256-GCM**
 dws auth login                                    # authenticate with DingTalk
 dws contact user search --keyword "Alice"           # search contacts
 dws calendar event list                            # list calendar events
-dws todo task create --title "Prepare quarterly report" --executors me   # create a todo
+dws todo task create --title "Prepare quarterly report" --executors "<userId>"   # create a todo
 ```
 
 ## AI Agent Skills
