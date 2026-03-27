@@ -2,32 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is inspired by Keep a Changelog and this project follows
-Semantic Versioning once versioned releases are published.
+The format is inspired by [Keep a Changelog](https://keepachangelog.com/) and this project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.0.0] - 2026-03-27
 
-### Added
+First public release of DingTalk Workspace CLI.
 
-- Open-source governance baseline:
-  - `LICENSE` (Apache License 2.0)
-  - `CODE_OF_CONDUCT.md`
-  - `SECURITY.md`
-  - `.github/PULL_REQUEST_TEMPLATE.md`
-  - `.github/workflows/ci.yml`
-  - `.env.example`
-  - `docs/architecture.md`
-- Open-source policy checks:
-  - `scripts/policy/check-open-source-assets.sh`
-  - `scripts/policy/open-source-audit.sh`
-  - CI integration through `.github/workflows/ci.yml`
-- Release hardening:
-  - SHA256 checksum generation for packaged artifacts
-  - Homebrew tap publish helper
+### Core
 
-### Changed
+- Discovery-driven CLI pipeline: Market → Discovery → IR → CLI → Transport
+- MCP JSON-RPC transport with retries, auth injection, and response size limits
+- Disk-based discovery cache with TTL and stale-fallback for offline resilience
+- OAuth device flow authentication with PBKDF2 + AES-256-GCM encrypted token storage
+- Structured output formats: JSON, table, raw
+- Global flags: `--format`, `--verbose`, `--debug`, `--dry-run`, `--yes`, `--timeout`
+- Exit codes with structured error payloads (category, reason, hint, actions)
 
-- Project license migrated from MIT to Apache License 2.0.
-- `README.md` and `CONTRIBUTING.md` expanded for open-source contribution and
-  governance guidance.
-- `scripts/README.md` now includes open-source policy checks.
+### Supported Services
+
+- **aitable** — AI table: bases, tables, fields, records, templates
+- **approval** — Approval processes, forms, instances
+- **attendance** — Attendance records, shifts, statistics
+- **calendar** — Events, participants, meeting rooms, free-busy
+- **chat** — Bot messaging (group/batch), webhook, bot management
+- **contact** — Users, departments, org structure
+- **devdoc** — Open platform docs search
+- **ding** — DING messages: send, recall
+- **report** — Reports, templates, statistics
+- **todo** — Task management: create, update, complete, delete
+- **workbench** — Workbench app query
+
+### Agent Skills
+
+- Bundled `SKILL.md` with product reference docs, intent routing guide, error codes, and batch scripts
+- One-line installer for macOS / Linux / Windows
+- Skills installed to `~/.agents/skills/dws` (home) or `./.agents/skills/dws` (project)
+
+### Packaging
+
+- Pre-built binaries for macOS (arm64/amd64), Linux (arm64/amd64), Windows (amd64)
+- One-line install scripts (`install.sh`, `install.ps1`)
+- Project-level skill installer (`install-skills.sh`)
+- Shell completion: Bash, Zsh, Fish
