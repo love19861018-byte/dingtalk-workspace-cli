@@ -54,7 +54,6 @@ func buildAuthCommand() *cobra.Command {
 		newAuthStatusCommand(),
 		newAuthImportCommand(),
 		newAuthExchangeCommand(),
-		newAuthResetCommand(),
 	)
 	return cmd
 }
@@ -122,6 +121,14 @@ func newAuthLoginCommand() *cobra.Command {
 			clearCompatCache()
 
 			w := cmd.OutOrStdout()
+
+			// Check if JSON output is requested
+			format, _ := cmd.Root().PersistentFlags().GetString("format")
+			if strings.EqualFold(strings.TrimSpace(format), "json") {
+				return writeAuthLoginJSON(w, tokenData, cfg.Force)
+			}
+
+			// Default table output
 			fmt.Fprintln(w)
 			if !cfg.Device && tokenData != nil && tokenData.IsAccessTokenValid() && !cfg.Force {
 				fmt.Fprintf(w, "[OK] Token 有效，无需重新登录\n")
@@ -147,22 +154,40 @@ func newAuthLoginCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().String("token", "", "Access token")
-	cmd.Flags().Bool("device", false, "Use device authorization flow (compatibility flag)")
-	cmd.Flags().Bool("force", false, "Force interactive login flow (compatibility flag)")
-	cmd.Flags().String("redirect-url", "", "Loopback redirect URL compatibility flag")
+	cmd.Flags().Bool("device", false, "Use device authorization flow")
+	cmd.Flags().Bool("force", false, "Force interactive login (ignore cached token)")
+	// Hidden compatibility flags
+	cmd.Flags().String("redirect-url", "", "Loopback redirect URL")
 	cmd.Flags().String("scopes", "", "Space-separated DingTalk OAuth scopes")
 	cmd.Flags().String("authorize-url", "", "Override DingTalk authorization URL")
 	cmd.Flags().String("token-url", "", "Override DingTalk token exchange URL")
 	cmd.Flags().String("refresh-url", "", "Override DingTalk refresh token URL")
-	cmd.Flags().Int("login-timeout", 0, "Compatibility flag for login timeout seconds")
-	cmd.Flags().Bool("no-browser", false, "Compatibility flag for browser launch suppression")
+	cmd.Flags().Int("login-timeout", 0, "Login timeout seconds")
+	cmd.Flags().Bool("no-browser", false, "Suppress browser launch")
+	_ = cmd.Flags().MarkHidden("redirect-url")
+	_ = cmd.Flags().MarkHidden("scopes")
+	_ = cmd.Flags().MarkHidden("authorize-url")
+	_ = cmd.Flags().MarkHidden("token-url")
+	_ = cmd.Flags().MarkHidden("refresh-url")
+	_ = cmd.Flags().MarkHidden("login-timeout")
+	_ = cmd.Flags().MarkHidden("no-browser")
 	return cmd
 }
 
 func newAuthLogoutCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:               "logout",
-		Short:             "清除认证信息",
+		Use:   "logout",
+		Short: "清除认证信息",
+		Long: `清除本地认证信息并撤销远程授权。
+
+执行操作:
+  1. 向服务端发送撤销请求 (使 token 失效)
+  2. 删除本地存储的认证数据
+  3. 清除缓存
+
+使用场景:
+  - 完全登出当前账号
+  - 遇到 "AUTH_TOKEN_EXPIRED" 或 "认证信息损坏" 错误时`,
 		DisableAutoGenTag: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			configDir := defaultConfigDir()
@@ -176,7 +201,16 @@ func newAuthLogoutCommand() *cobra.Command {
 			_ = os.Remove(filepath.Join(configDir, "mcp_url"))
 			_ = os.Remove(filepath.Join(configDir, "token"))
 			clearCompatCache()
+
 			w := cmd.OutOrStdout()
+
+			// Check if JSON output is requested
+			format, _ := cmd.Root().PersistentFlags().GetString("format")
+			if strings.EqualFold(strings.TrimSpace(format), "json") {
+				return writeAuthLogoutJSON(w)
+			}
+
+			// Default table output
 			fmt.Fprintln(w, "[OK] 已清除所有认证信息")
 			fmt.Fprintln(w, "请运行 dws auth login 重新登录")
 			return nil
@@ -186,8 +220,15 @@ func newAuthLogoutCommand() *cobra.Command {
 
 func newAuthStatusCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:               "status",
-		Short:             "查看认证状态",
+		Use:     "status",
+		Aliases: []string{"whoami"},
+		Short:   "查看认证状态",
+		Long: `查看当前认证状态和用户信息。
+
+示例:
+  dws auth status           # 查看认证状态
+  dws auth status -f json   # JSON 格式输出
+  dws auth whoami           # 别名，与 status 相同`,
 		DisableAutoGenTag: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			configDir := defaultConfigDir()
@@ -288,6 +329,65 @@ func writeAuthStatusJSON(w io.Writer, authenticated, refreshed bool, data *authp
 	return enc.Encode(resp)
 }
 
+// authLoginResponse is the JSON response for auth login command.
+type authLoginResponse struct {
+	Success           bool   `json:"success"`
+	Message           string `json:"message"`
+	TokenValid        bool   `json:"token_valid,omitempty"`
+	RefreshTokenValid bool   `json:"refresh_token_valid,omitempty"`
+	ExpiresAt         string `json:"expires_at,omitempty"`
+	RefreshExpiresAt  string `json:"refresh_expires_at,omitempty"`
+	CorpID            string `json:"corp_id,omitempty"`
+	CorpName          string `json:"corp_name,omitempty"`
+	UserID            string `json:"user_id,omitempty"`
+	UserName          string `json:"user_name,omitempty"`
+}
+
+func writeAuthLoginJSON(w io.Writer, data *authpkg.TokenData, forced bool) error {
+	resp := authLoginResponse{
+		Success: true,
+		Message: "登录成功",
+	}
+
+	if data != nil {
+		if data.IsAccessTokenValid() && !forced {
+			resp.Message = "Token 有效，无需重新登录"
+		}
+		resp.TokenValid = data.IsAccessTokenValid()
+		resp.RefreshTokenValid = data.IsRefreshTokenValid()
+		if !data.ExpiresAt.IsZero() {
+			resp.ExpiresAt = data.ExpiresAt.Format(time.RFC3339Nano)
+		}
+		if !data.RefreshExpAt.IsZero() {
+			resp.RefreshExpiresAt = data.RefreshExpAt.Format(time.RFC3339Nano)
+		}
+		resp.CorpID = data.CorpID
+		resp.CorpName = data.CorpName
+		resp.UserID = data.UserID
+		resp.UserName = data.UserName
+	}
+
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(resp)
+}
+
+// authLogoutResponse is the JSON response for auth logout command.
+type authLogoutResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+func writeAuthLogoutJSON(w io.Writer) error {
+	resp := authLogoutResponse{
+		Success: true,
+		Message: "已清除所有认证信息",
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(resp)
+}
+
 func newAuthImportCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:               "import <file>",
@@ -382,27 +482,6 @@ func newAuthExchangeCommand() *cobra.Command {
 	cmd.Flags().String("redirect-url", "", "Compatibility flag")
 	cmd.Flags().String("scopes", "", "Compatibility flag")
 	return cmd
-}
-
-func newAuthResetCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:               "reset",
-		Short:             "重置认证信息（清除本地 Token，触发重新授权）",
-		DisableAutoGenTag: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			configDir := defaultConfigDir()
-			if err := authpkg.DeleteTokenData(configDir); err != nil {
-				return apperrors.NewInternal(fmt.Sprintf("failed to reset token data: %v", err))
-			}
-			_ = os.Remove(filepath.Join(configDir, "mcp_url"))
-			_ = os.Remove(filepath.Join(configDir, "token"))
-			clearCompatCache()
-			w := cmd.OutOrStdout()
-			fmt.Fprintln(w, "[OK] 认证信息已重置")
-			fmt.Fprintln(w, "请运行 dws auth login 重新登录")
-			return nil
-		},
-	}
 }
 
 func timeOrEmpty(t time.Time) string {
