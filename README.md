@@ -18,6 +18,8 @@
   <a href="https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases"><img src="https://img.shields.io/badge/release-v1.0.0-red" alt="v1.0.0"></a>
 </p>
 
+[中文版](./README.md) | [English](./README_en.md)
+
 ## 目录
 
 - [为什么选择 dws？](#why-dws)
@@ -95,12 +97,17 @@ dws contact user search --keyword "悟空" -f json
 curl -fsSL https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/main/scripts/install.sh | sh
 ```
 
-**Windows (PowerShell)：**
+**Windows（请先打开 PowerShell / Windows Terminal）：**
 
 ```powershell
 irm https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/main/scripts/install.ps1 | iex
 ```
 
+> 请在**已经打开的 PowerShell 窗口**中执行上面的命令，不要直接粘贴到 `Win + R` 的“运行”对话框或 `cmd.exe`。
+> 如果你只能从“运行”或 `cmd.exe` 启动，请改用：
+> `powershell -NoExit -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/main/scripts/install.ps1 | iex"`
+>
+>
 > 自动检测操作系统和架构，从 [GitHub Releases](https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases) 下载预编译二进制文件，并安装 Agent Skills 到 `~/.agents/skills/dws` — 无需 Go、Node.js 或其他依赖。大多数 AI Agent（Claude Code、Cursor、Windsurf 等）可自动发现 `.agents/skills/` 目录下的技能。
 
 > [!TIP]

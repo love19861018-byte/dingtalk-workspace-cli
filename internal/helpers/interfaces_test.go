@@ -46,4 +46,3 @@ func TestValidateNaming(t *testing.T) {
 		})
 	}
 }
-

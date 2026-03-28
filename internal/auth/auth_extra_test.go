@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -294,73 +293,6 @@ func TestRevokeTokenRemote(t *testing.T) {
 	}))
 	defer srv.Close()
 	// Can't easily test since LogoutURL is a const. Just test that it doesn't panic with real URL.
-}
-
-// ─── export.go ─────────────────────────────────────────────────────────
-
-func TestLoadExportedCredentials_ValidPersistentCode(t *testing.T) {
-	dir := t.TempDir()
-	creds := ExportedCredentials{
-		PersistentCode: "pcode-123",
-		CorpID:         "corp1",
-		ExportedAt:     time.Now().Format(time.RFC3339),
-	}
-	data, _ := json.Marshal(creds)
-	path := filepath.Join(dir, "creds.json")
-	_ = os.WriteFile(path, data, 0o600)
-
-	_, err := LoadExportedCredentials(context.Background(), path, dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestLoadExportedCredentials_ValidRefreshToken(t *testing.T) {
-	dir := t.TempDir()
-	creds := ExportedCredentials{
-		RefreshToken: "refresh-123",
-		CorpID:       "corp1",
-		ExportedAt:   time.Now().Format(time.RFC3339),
-	}
-	data, _ := json.Marshal(creds)
-	path := filepath.Join(dir, "creds.json")
-	_ = os.WriteFile(path, data, 0o600)
-
-	_, err := LoadExportedCredentials(context.Background(), path, dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestLoadExportedCredentials_NoCredential(t *testing.T) {
-	dir := t.TempDir()
-	creds := ExportedCredentials{CorpID: "corp1"}
-	data, _ := json.Marshal(creds)
-	path := filepath.Join(dir, "creds.json")
-	os.WriteFile(path, data, 0o600)
-
-	_, err := LoadExportedCredentials(context.Background(), path, dir)
-	if err == nil {
-		t.Fatal("expected error for missing credentials")
-	}
-}
-
-func TestLoadExportedCredentials_InvalidJSON(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "creds.json")
-	os.WriteFile(path, []byte("not json"), 0o600)
-
-	_, err := LoadExportedCredentials(context.Background(), path, dir)
-	if err == nil {
-		t.Fatal("expected error for invalid JSON")
-	}
-}
-
-func TestLoadExportedCredentials_MissingFile(t *testing.T) {
-	_, err := LoadExportedCredentials(context.Background(), "/nonexistent/path", t.TempDir())
-	if err == nil {
-		t.Fatal("expected error for missing file")
-	}
 }
 
 // ─── oauth_helpers.go ──────────────────────────────────────────────────

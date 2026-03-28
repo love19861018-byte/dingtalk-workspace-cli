@@ -104,7 +104,7 @@ func DataFileExistsInAny(dirs ...string) bool {
 	return false
 }
 
-// SaveToken encrypts and persists token data using atomic write.
+// SaveToken encrypts and persists token data using atomic write with fsync.
 func (s *SecureTokenStorage) SaveToken(data *TokenData) error {
 	if err := os.MkdirAll(s.configDir, config.DirPerm); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
@@ -119,13 +119,35 @@ func (s *SecureTokenStorage) SaveToken(data *TokenData) error {
 	}
 	finalPath := dataPath(s.configDir)
 	tmpPath := finalPath + ".tmp"
-	if err := os.WriteFile(tmpPath, enc, config.FilePerm); err != nil {
+
+	// Atomic write with fsync to ensure data durability
+	tmpFile, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, config.FilePerm)
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+
+	writeSuccess := false
+	defer func() {
+		if !writeSuccess {
+			tmpFile.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmpFile.Write(enc); err != nil {
 		return fmt.Errorf("writing temp file: %w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		return fmt.Errorf("syncing temp file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("closing temp file: %w", err)
 	}
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("renaming to final: %w", err)
 	}
+	writeSuccess = true
 	return nil
 }
 

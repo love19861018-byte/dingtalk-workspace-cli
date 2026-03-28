@@ -58,20 +58,48 @@ func (t *TokenData) HasPersistentCode() bool {
 	return t != nil && t.PersistentCode != ""
 }
 
-// SaveTokenData encrypts and saves TokenData to .data file.
-// Uses AES-256-GCM encryption with a key derived from device MAC address.
+// SaveTokenData saves TokenData to the platform keychain.
+// Uses the new keychain-based storage with random master key for better security.
 func SaveTokenData(configDir string, data *TokenData) error {
-	return SaveSecureTokenData(configDir, data)
+	return SaveTokenDataKeychain(data)
 }
 
-// LoadTokenData reads TokenData from encrypted .data file.
+// LoadTokenData reads TokenData from the platform keychain.
+// On first call, it attempts to migrate legacy .data file if present.
 func LoadTokenData(configDir string) (*TokenData, error) {
-	return LoadSecureTokenData(configDir)
+	// Try loading from new keychain first
+	if TokenDataExistsKeychain() {
+		return LoadTokenDataKeychain()
+	}
+
+	// Fallback: try legacy .data file and migrate
+	data, err := LoadSecureTokenData(configDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// Migrate to keychain for future use
+	if err := SaveTokenDataKeychain(data); err == nil {
+		// Successfully migrated, delete legacy file
+		_ = DeleteSecureData(configDir)
+	}
+
+	return data, nil
 }
 
-// DeleteTokenData removes encrypted .data file from configDir.
+// DeleteTokenData removes token data from both keychain and legacy storage.
 func DeleteTokenData(configDir string) error {
-	return DeleteSecureData(configDir)
+	// Delete from keychain
+	keychainErr := DeleteTokenDataKeychain()
+
+	// Also clean up any legacy .data file
+	legacyErr := DeleteSecureData(configDir)
+
+	// Return keychain error if any, otherwise legacy error
+	if keychainErr != nil {
+		return keychainErr
+	}
+	return legacyErr
 }
 
 // RevokeTokenRemote calls the DingTalk logout endpoint to invalidate the access token.

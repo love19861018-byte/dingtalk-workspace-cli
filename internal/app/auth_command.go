@@ -52,8 +52,8 @@ func buildAuthCommand() *cobra.Command {
 	cmd.AddCommand(
 		newAuthLogoutCommand(),
 		newAuthStatusCommand(),
-		newAuthImportCommand(),
 		newAuthExchangeCommand(),
+		newAuthResetCommand(),
 	)
 	return cmd
 }
@@ -176,18 +176,8 @@ func newAuthLoginCommand() *cobra.Command {
 
 func newAuthLogoutCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "logout",
-		Short: "清除认证信息",
-		Long: `清除本地认证信息并撤销远程授权。
-
-执行操作:
-  1. 向服务端发送撤销请求 (使 token 失效)
-  2. 删除本地存储的认证数据
-  3. 清除缓存
-
-使用场景:
-  - 完全登出当前账号
-  - 遇到 "AUTH_TOKEN_EXPIRED" 或 "认证信息损坏" 错误时`,
+		Use:               "logout",
+		Short:             "清除认证信息",
 		DisableAutoGenTag: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			configDir := defaultConfigDir()
@@ -201,16 +191,7 @@ func newAuthLogoutCommand() *cobra.Command {
 			_ = os.Remove(filepath.Join(configDir, "mcp_url"))
 			_ = os.Remove(filepath.Join(configDir, "token"))
 			clearCompatCache()
-
 			w := cmd.OutOrStdout()
-
-			// Check if JSON output is requested
-			format, _ := cmd.Root().PersistentFlags().GetString("format")
-			if strings.EqualFold(strings.TrimSpace(format), "json") {
-				return writeAuthLogoutJSON(w)
-			}
-
-			// Default table output
 			fmt.Fprintln(w, "[OK] 已清除所有认证信息")
 			fmt.Fprintln(w, "请运行 dws auth login 重新登录")
 			return nil
@@ -220,15 +201,8 @@ func newAuthLogoutCommand() *cobra.Command {
 
 func newAuthStatusCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:     "status",
-		Aliases: []string{"whoami"},
-		Short:   "查看认证状态",
-		Long: `查看当前认证状态和用户信息。
-
-示例:
-  dws auth status           # 查看认证状态
-  dws auth status -f json   # JSON 格式输出
-  dws auth whoami           # 别名，与 status 相同`,
+		Use:               "status",
+		Short:             "查看认证状态",
 		DisableAutoGenTag: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			configDir := defaultConfigDir()
@@ -256,15 +230,14 @@ func newAuthStatusCommand() *cobra.Command {
 				}
 			}
 
-			w := cmd.OutOrStdout()
-
 			// Check if JSON output is requested
 			format, _ := cmd.Root().PersistentFlags().GetString("format")
 			if strings.EqualFold(strings.TrimSpace(format), "json") {
-				return writeAuthStatusJSON(w, authenticated, refreshed, tokenData)
+				return writeAuthStatusJSON(cmd.OutOrStdout(), authenticated, refreshed, tokenData)
 			}
 
 			// Default table output
+			w := cmd.OutOrStdout()
 			if authenticated {
 				if refreshed {
 					fmt.Fprintf(w, "%-16s%s\n", "状态:", "已登录 ✅")
@@ -282,6 +255,164 @@ func newAuthStatusCommand() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newAuthExchangeCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:               "exchange",
+		Short:             "Exchange an authorization code for credentials",
+		Hidden:            true,
+		DisableAutoGenTag: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			code, err := cmd.Flags().GetString("code")
+			if err != nil {
+				return apperrors.NewInternal("failed to read --code")
+			}
+			code = strings.TrimSpace(code)
+			if code == "" {
+				return apperrors.NewValidation("--code is required")
+			}
+			uid, err := cmd.Flags().GetString("uid")
+			if err != nil {
+				return apperrors.NewInternal("failed to read --uid")
+			}
+
+			configDir := defaultConfigDir()
+			provider := authpkg.NewOAuthProvider(configDir, nil)
+			configureOAuthProviderCompatibility(provider, configDir)
+			exchangeCtx, cancel := context.WithTimeout(cmd.Context(), time.Minute)
+			defer cancel()
+			tokenData, err := provider.ExchangeAuthCode(exchangeCtx, code, strings.TrimSpace(uid))
+			if err != nil {
+				return apperrors.NewAuth(fmt.Sprintf("failed to exchange authorization code: %v", err))
+			}
+			clearCompatCache()
+
+			w := cmd.OutOrStdout()
+			fmt.Fprintln(w, "[OK] 授权码兑换成功！")
+			if strings.TrimSpace(uid) != "" {
+				fmt.Fprintf(w, "%-16s%s\n", "用户:", strings.TrimSpace(uid))
+			}
+			if strings.TrimSpace(tokenData.CorpID) != "" {
+				fmt.Fprintf(w, "%-16s%s\n", "企业 ID:", tokenData.CorpID)
+			}
+			if !tokenData.ExpiresAt.IsZero() {
+				fmt.Fprintf(w, "%-16s%s\n", "有效期:", authLoginFormatExpiry(tokenData.ExpiresAt))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().String("code", "", "Authorization code")
+	cmd.Flags().String("uid", "", "Optional user identifier for compatibility")
+	cmd.Flags().String("client-id", "", "Compatibility flag")
+	cmd.Flags().String("authorize-url", "", "Compatibility flag")
+	cmd.Flags().String("token-url", "", "Compatibility flag")
+	cmd.Flags().String("refresh-url", "", "Compatibility flag")
+	cmd.Flags().String("redirect-url", "", "Compatibility flag")
+	cmd.Flags().String("scopes", "", "Compatibility flag")
+	return cmd
+}
+
+func newAuthResetCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:               "reset",
+		Short:             "重置认证信息（清除本地 Token，触发重新授权）",
+		DisableAutoGenTag: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			configDir := defaultConfigDir()
+			if err := authpkg.DeleteTokenData(configDir); err != nil {
+				return apperrors.NewInternal(fmt.Sprintf("failed to reset token data: %v", err))
+			}
+			_ = os.Remove(filepath.Join(configDir, "mcp_url"))
+			_ = os.Remove(filepath.Join(configDir, "token"))
+			clearCompatCache()
+			w := cmd.OutOrStdout()
+			fmt.Fprintln(w, "[OK] 认证信息已重置")
+			fmt.Fprintln(w, "请运行 dws auth login 重新登录")
+			return nil
+		},
+	}
+}
+
+func timeOrEmpty(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+func authLoginFormatExpiry(t time.Time) string {
+	remaining := time.Until(t)
+	if remaining <= 0 {
+		return "已过期"
+	}
+	if remaining > 24*time.Hour {
+		return fmt.Sprintf("%.0f 天后", remaining.Hours()/24)
+	}
+	return fmt.Sprintf("%.0f 小时后", remaining.Hours())
+}
+
+// authLoginDisplayExpiry 返回用于显示的有效期（优先显示 refresh token 有效期）
+func authLoginDisplayExpiry(data *authpkg.TokenData) string {
+	if data == nil {
+		return ""
+	}
+	// 优先使用 refresh token 有效期（更长，对用户更有意义）
+	if data.IsRefreshTokenValid() {
+		return authLoginFormatExpiry(data.RefreshExpAt)
+	}
+	// 回退到 access token 有效期
+	if !data.ExpiresAt.IsZero() {
+		return authLoginFormatExpiry(data.ExpiresAt)
+	}
+	return ""
+}
+
+func clearCompatCache() {
+	store := cacheStoreFromEnv()
+	if store != nil {
+		_ = os.RemoveAll(store.Root)
+	}
+}
+
+func resolveAuthLoginConfig(cmd *cobra.Command) (authLoginConfig, error) {
+	token, err := cmd.Flags().GetString("token")
+	if err != nil {
+		return authLoginConfig{}, apperrors.NewInternal("failed to read --token")
+	}
+	device, err := cmd.Flags().GetBool("device")
+	if err != nil {
+		return authLoginConfig{}, apperrors.NewInternal("failed to read --device")
+	}
+	force, err := cmd.Flags().GetBool("force")
+	if err != nil {
+		return authLoginConfig{}, apperrors.NewInternal("failed to read --force")
+	}
+	return authLoginConfig{
+		Token:  strings.TrimSpace(token),
+		Force:  force,
+		Device: device,
+	}, nil
+}
+
+func authStatusAuthenticated(data *authpkg.TokenData) bool {
+	if data == nil {
+		return false
+	}
+	return data.IsAccessTokenValid() || data.IsRefreshTokenValid()
+}
+
+func authStatusUpdatedAt(data *authpkg.TokenData) string {
+	if data == nil {
+		return ""
+	}
+	if data.IsAccessTokenValid() {
+		return timeOrEmpty(data.ExpiresAt)
+	}
+	if data.IsRefreshTokenValid() {
+		return timeOrEmpty(data.RefreshExpAt)
+	}
+	return ""
 }
 
 // authStatusResponse is the JSON response for auth status command.
@@ -386,181 +517,4 @@ func writeAuthLogoutJSON(w io.Writer) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(resp)
-}
-
-func newAuthImportCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:               "import <file>",
-		Short:             "导入认证信息",
-		Hidden:            true,
-		Args:              cobra.ExactArgs(1),
-		DisableAutoGenTag: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			configDir := defaultConfigDir()
-			if err := validateOptionalPath("credentials file", args[0]); err != nil {
-				return err
-			}
-			if _, err := authpkg.LoadExportedCredentials(cmd.Context(), args[0], configDir); err != nil {
-				return apperrors.NewValidation(fmt.Sprintf("failed to import credentials: %v", err))
-			}
-
-			provider := authpkg.NewOAuthProvider(configDir, nil)
-			refreshCtx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
-			defer cancel()
-			token, refreshErr := provider.GetAccessToken(refreshCtx)
-			tokenData, statusErr := provider.Status()
-			if statusErr != nil {
-				return apperrors.NewInternal(fmt.Sprintf("failed to load imported token data: %v", statusErr))
-			}
-			if refreshErr == nil {
-				tokenData.AccessToken = token
-			}
-			clearCompatCache()
-
-			w := cmd.OutOrStdout()
-			fmt.Fprintln(w, "[OK] 认证信息导入成功")
-			if refreshErr != nil {
-				fmt.Fprintf(w, "[WARN] 凭证暂时无法刷新: %v\n", refreshErr)
-			}
-			fmt.Fprintln(w, "Token 将自动刷新，无需重复登录")
-			return nil
-		},
-	}
-}
-
-func newAuthExchangeCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:               "exchange",
-		Short:             "Exchange an authorization code for credentials",
-		Hidden:            true,
-		DisableAutoGenTag: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			code, err := cmd.Flags().GetString("code")
-			if err != nil {
-				return apperrors.NewInternal("failed to read --code")
-			}
-			code = strings.TrimSpace(code)
-			if code == "" {
-				return apperrors.NewValidation("--code is required")
-			}
-			uid, err := cmd.Flags().GetString("uid")
-			if err != nil {
-				return apperrors.NewInternal("failed to read --uid")
-			}
-
-			configDir := defaultConfigDir()
-			provider := authpkg.NewOAuthProvider(configDir, nil)
-			configureOAuthProviderCompatibility(provider, configDir)
-			exchangeCtx, cancel := context.WithTimeout(cmd.Context(), time.Minute)
-			defer cancel()
-			tokenData, err := provider.ExchangeAuthCode(exchangeCtx, code, strings.TrimSpace(uid))
-			if err != nil {
-				return apperrors.NewAuth(fmt.Sprintf("failed to exchange authorization code: %v", err))
-			}
-			clearCompatCache()
-
-			w := cmd.OutOrStdout()
-			fmt.Fprintln(w, "[OK] 授权码兑换成功！")
-			if strings.TrimSpace(uid) != "" {
-				fmt.Fprintf(w, "%-16s%s\n", "用户:", strings.TrimSpace(uid))
-			}
-			if strings.TrimSpace(tokenData.CorpID) != "" {
-				fmt.Fprintf(w, "%-16s%s\n", "企业 ID:", tokenData.CorpID)
-			}
-			if !tokenData.ExpiresAt.IsZero() {
-				fmt.Fprintf(w, "%-16s%s\n", "有效期:", authLoginFormatExpiry(tokenData.ExpiresAt))
-			}
-			return nil
-		},
-	}
-	cmd.Flags().String("code", "", "Authorization code")
-	cmd.Flags().String("uid", "", "Optional user identifier for compatibility")
-	cmd.Flags().String("client-id", "", "Compatibility flag")
-	cmd.Flags().String("authorize-url", "", "Compatibility flag")
-	cmd.Flags().String("token-url", "", "Compatibility flag")
-	cmd.Flags().String("refresh-url", "", "Compatibility flag")
-	cmd.Flags().String("redirect-url", "", "Compatibility flag")
-	cmd.Flags().String("scopes", "", "Compatibility flag")
-	return cmd
-}
-
-func timeOrEmpty(t time.Time) string {
-	if t.IsZero() {
-		return ""
-	}
-	return t.UTC().Format(time.RFC3339)
-}
-
-func authLoginFormatExpiry(t time.Time) string {
-	remaining := time.Until(t)
-	if remaining <= 0 {
-		return "已过期"
-	}
-	if remaining > 24*time.Hour {
-		return fmt.Sprintf("%.0f 天后", remaining.Hours()/24)
-	}
-	return fmt.Sprintf("%.0f 小时后", remaining.Hours())
-}
-
-// authLoginDisplayExpiry 返回用于显示的有效期（优先显示 refresh token 有效期）
-func authLoginDisplayExpiry(data *authpkg.TokenData) string {
-	if data == nil {
-		return ""
-	}
-	// 优先使用 refresh token 有效期（更长，对用户更有意义）
-	if data.IsRefreshTokenValid() {
-		return authLoginFormatExpiry(data.RefreshExpAt)
-	}
-	// 回退到 access token 有效期
-	if !data.ExpiresAt.IsZero() {
-		return authLoginFormatExpiry(data.ExpiresAt)
-	}
-	return ""
-}
-
-func clearCompatCache() {
-	store := cacheStoreFromEnv()
-	if store != nil {
-		_ = os.RemoveAll(store.Root)
-	}
-}
-
-func resolveAuthLoginConfig(cmd *cobra.Command) (authLoginConfig, error) {
-	token, err := cmd.Flags().GetString("token")
-	if err != nil {
-		return authLoginConfig{}, apperrors.NewInternal("failed to read --token")
-	}
-	device, err := cmd.Flags().GetBool("device")
-	if err != nil {
-		return authLoginConfig{}, apperrors.NewInternal("failed to read --device")
-	}
-	force, err := cmd.Flags().GetBool("force")
-	if err != nil {
-		return authLoginConfig{}, apperrors.NewInternal("failed to read --force")
-	}
-	return authLoginConfig{
-		Token:  strings.TrimSpace(token),
-		Force:  force,
-		Device: device,
-	}, nil
-}
-
-func authStatusAuthenticated(data *authpkg.TokenData) bool {
-	if data == nil {
-		return false
-	}
-	return data.IsAccessTokenValid() || data.IsRefreshTokenValid()
-}
-
-func authStatusUpdatedAt(data *authpkg.TokenData) string {
-	if data == nil {
-		return ""
-	}
-	if data.IsAccessTokenValid() {
-		return timeOrEmpty(data.ExpiresAt)
-	}
-	if data.IsRefreshTokenValid() {
-		return timeOrEmpty(data.RefreshExpAt)
-	}
-	return ""
 }

@@ -43,6 +43,12 @@ const (
 	defaultMaxRetries    = 2
 	defaultRetryDelay    = 10 * time.Millisecond
 	defaultRetryMaxDelay = 80 * time.Millisecond
+
+	// Security headers
+	HeaderSource      = "X-Cli-Source"
+	HeaderVersion     = "X-Cli-Version"
+	HeaderExecutionId = "X-Cli-Execution-Id"
+	SourceValue       = "dws-cli"
 )
 
 // Supported MCP protocol versions, ordered from newest to oldest.
@@ -61,6 +67,7 @@ type Client struct {
 	ExtraHeaders     map[string]string
 	SnapshotRecorder SnapshotRecorder
 	TrustedDomains   []string
+	ExecutionId      string // Request tracing ID for debugging
 	sleep            func(context.Context, time.Duration) error
 	wildcardOnce     sync.Once
 	// Stderr is the writer for warning messages. Defaults to os.Stderr.
@@ -177,7 +184,13 @@ func (r *ToolCallResult) UnmarshalJSON(data []byte) error {
 
 func NewClient(httpClient *http.Client) *Client {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
+		httpClient = &http.Client{
+			Timeout:       defaultHTTPTimeout,
+			CheckRedirect: safeRedirectPolicy,
+		}
+	} else if httpClient.CheckRedirect == nil {
+		// Wrap existing client with safe redirect policy
+		httpClient.CheckRedirect = safeRedirectPolicy
 	}
 	return &Client{
 		HTTPClient:    httpClient,
@@ -185,6 +198,22 @@ func NewClient(httpClient *http.Client) *Client {
 		RetryDelay:    defaultRetryDelay,
 		RetryMaxDelay: defaultRetryMaxDelay,
 	}
+}
+
+// safeRedirectPolicy prevents credential headers from being forwarded
+// when a response redirects to a different host (e.g. API 302 → CDN).
+// Strips Authorization, x-user-access-token on cross-host redirects;
+// other headers like X-Cli-* pass through.
+func safeRedirectPolicy(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("too many redirects")
+	}
+	if len(via) > 0 && req.URL.Host != via[0].URL.Host {
+		// Cross-host redirect: strip sensitive headers to prevent credential leakage
+		req.Header.Del("Authorization")
+		req.Header.Del("x-user-access-token")
+	}
+	return nil
 }
 
 // WithAuth returns a shallow copy of c with the given auth token and extra
@@ -200,9 +229,18 @@ func (c *Client) WithAuth(token string, headers map[string]string) *Client {
 		ExtraHeaders:     headers,
 		SnapshotRecorder: c.SnapshotRecorder,
 		TrustedDomains:   c.TrustedDomains,
+		ExecutionId:      c.ExecutionId,
 		sleep:            c.sleep,
 		Stderr:           c.Stderr,
 	}
+}
+
+// WithExecutionId returns a shallow copy of c with the given execution ID.
+// The execution ID is included in requests for tracing and debugging.
+func (c *Client) WithExecutionId(executionId string) *Client {
+	copy := c.WithAuth(c.AuthToken, c.ExtraHeaders)
+	copy.ExecutionId = executionId
+	return copy
 }
 
 func SupportedProtocolVersions() []string {
@@ -373,6 +411,11 @@ func (c *Client) doWithRetry(ctx context.Context, endpoint string, body []byte) 
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")
+		// Set security headers for request tracing
+		req.Header.Set(HeaderSource, SourceValue)
+		if c.ExecutionId != "" {
+			req.Header.Set(HeaderExecutionId, c.ExecutionId)
+		}
 		if token := sanitizeBearerToken(c.AuthToken); token != "" {
 			if c.isEndpointTrusted(endpoint) {
 				req.Header.Set("Authorization", "Bearer "+token)

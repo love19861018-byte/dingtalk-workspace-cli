@@ -17,15 +17,20 @@ import (
 	"bytes"
 	"errors"
 	"net/http"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	authpkg "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/auth"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/keychain"
 )
 
 func TestAuthStatusRefreshFailureLeavesStoredTokenIntact(t *testing.T) {
+	// Cleanup keychain after test
+	t.Cleanup(func() {
+		_ = keychain.Remove(keychain.Service, keychain.AccountToken)
+	})
+
 	root := t.TempDir()
 	configDir := filepath.Join(root, "config")
 
@@ -60,8 +65,9 @@ func TestAuthStatusRefreshFailureLeavesStoredTokenIntact(t *testing.T) {
 		t.Fatalf("Execute() error = %v\noutput:\n%s", err, out.String())
 	}
 
-	if _, err := os.Stat(filepath.Join(configDir, ".data")); err != nil {
-		t.Fatalf("secure token data should remain after refresh failure: %v", err)
+	// Verify token data still exists in keychain after refresh failure
+	if !authpkg.TokenDataExistsKeychain() {
+		t.Fatal("secure token data should remain in keychain after refresh failure")
 	}
 
 	if !bytes.Contains(out.Bytes(), []byte("已登录")) {

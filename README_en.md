@@ -18,6 +18,8 @@ Access contacts, calendar, todos, attendance, AI tables and more with zero boile
   <a href="https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases"><img src="https://img.shields.io/badge/release-v1.0.0-red" alt="v1.0.0"></a>
 </p>
 
+[中文版](./README.md) | [English](./README_en.md)
+
 ## Contents
 
 - [Why dws?](#why-dws)
@@ -95,12 +97,16 @@ Run `dws --help` for the complete list, or `dws <service> --help` for service-sp
 curl -fsSL https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/main/scripts/install.sh | sh
 ```
 
-**Windows (PowerShell):**
+**Windows (open PowerShell / Windows Terminal first):**
 
 ```powershell
 irm https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/main/scripts/install.ps1 | iex
 ```
-
+>
+> If you need to launch it from Run or `cmd.exe`, use:
+> `powershell -NoExit -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/main/scripts/install.ps1 | iex"`
+>
+>
 > Auto-detects OS and architecture, downloads the pre-built binary from [GitHub Releases](https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases), and installs Agent Skills to `~/.agents/skills/dws` — no Go, Node.js, or other dependencies required. Most AI agents (Claude Code, Cursor, Windsurf, etc.) can discover skills from the `.agents/skills/` directory.
 
 > [!TIP]

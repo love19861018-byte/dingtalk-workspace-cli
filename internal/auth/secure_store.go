@@ -101,13 +101,34 @@ func SaveSecureTokenData(configDir string, data *TokenData) error {
 	finalPath := filepath.Join(configDir, secureDataFile)
 	tmpPath := finalPath + ".tmp"
 
-	if err := os.WriteFile(tmpPath, ciphertext, config.FilePerm); err != nil {
+	// Atomic write with fsync to ensure data durability
+	tmpFile, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, config.FilePerm)
+	if err != nil {
+		return fmt.Errorf("creating tmp file: %w", err)
+	}
+
+	writeSuccess := false
+	defer func() {
+		if !writeSuccess {
+			tmpFile.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmpFile.Write(ciphertext); err != nil {
 		return fmt.Errorf("writing tmp file: %w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		return fmt.Errorf("syncing tmp file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("closing tmp file: %w", err)
 	}
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("renaming tmp to final: %w", err)
 	}
+	writeSuccess = true
 
 	return nil
 }

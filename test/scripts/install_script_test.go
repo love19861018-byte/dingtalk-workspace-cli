@@ -218,6 +218,40 @@ func TestInstallScriptsUseFlattenedSkillsSourceRoot(t *testing.T) {
 	}
 }
 
+func TestBuildEntrypointsUseStripLdflags(t *testing.T) {
+	t.Parallel()
+
+	checks := []struct {
+		relPath string
+		want    string
+	}{
+		{
+			relPath: filepath.Join("..", "..", "scripts", "install.ps1"),
+			want:    `go build -ldflags="-s -w" -o $tmpBin "$Root/cmd"`,
+		},
+		{
+			relPath: filepath.Join("..", "..", "scripts", "policy", "check-command-surface.sh"),
+			want:    `go build -ldflags="-s -w" -o "$BIN_PATH" ./cmd`,
+		},
+	}
+
+	for _, tc := range checks {
+		scriptPath, err := filepath.Abs(tc.relPath)
+		if err != nil {
+			t.Fatalf("Abs(%s) error = %v", tc.relPath, err)
+		}
+
+		data, err := os.ReadFile(scriptPath)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", scriptPath, err)
+		}
+
+		if !strings.Contains(string(data), tc.want) {
+			t.Fatalf("%s missing stripped ldflags build invocation %q", scriptPath, tc.want)
+		}
+	}
+}
+
 func mustWriteFile(t *testing.T, path string, data []byte, mode os.FileMode) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

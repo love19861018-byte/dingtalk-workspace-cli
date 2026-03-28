@@ -5,8 +5,11 @@
 # Downloads the pre-built binary from GitHub Releases and installs agent skills.
 # No Go, Node.js, or other dependencies required.
 #
-# Usage:
+# Usage (from an existing PowerShell session):
 #   irm https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/main/scripts/install.ps1 | iex
+#
+# If you are launching from Win+R or cmd.exe and want the window to stay open:
+#   powershell -NoExit -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/main/scripts/install.ps1 | iex"
 #
 # Environment variables (all optional):
 #   DWS_INSTALL_DIR   — where to put the binary       (default: ~/.local/bin)
@@ -253,7 +256,7 @@ function Install-BinaryFromSource {
 
     $tmpBin = Join-Path ([System.IO.Path]::GetTempPath()) "dws-build-$PID.exe"
     try {
-        & go build -o $tmpBin "$Root/cmd"
+        & go build -ldflags="-s -w" -o $tmpBin "$Root/cmd"
         $destBin = Join-Path $InstallDir "${BinName}.exe"
         Copy-Item -Path $tmpBin -Destination $destBin -Force
         Write-Say "✅ Binary installed:"

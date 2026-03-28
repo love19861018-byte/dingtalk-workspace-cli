@@ -197,9 +197,6 @@ func NewRootCommand(ctx ...context.Context) *cobra.Command {
 		},
 	}
 
-	// Set custom flag error handler for better UX
-	root.SetFlagErrorFunc(flagErrorWithSuggestions)
-
 	bindPersistentFlags(root, flags)
 
 	schemaCmd := newSchemaCommand(loader)
@@ -224,6 +221,8 @@ func NewRootCommand(ctx ...context.Context) *cobra.Command {
 
 	hideNonDirectRuntimeCommands(root)
 	configureRootHelp(root)
+	// Set custom flag error handler for better UX
+	root.SetFlagErrorFunc(flagErrorWithSuggestions)
 	root.SetContext(rootCtx)
 
 	return root

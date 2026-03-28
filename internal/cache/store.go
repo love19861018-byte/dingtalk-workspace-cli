@@ -258,7 +258,37 @@ func (s *Store) saveJSON(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+
+	// Atomic write with fsync to ensure data durability
+	tmpPath := path + ".tmp"
+	tmpFile, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+
+	writeSuccess := false
+	defer func() {
+		if !writeSuccess {
+			tmpFile.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		return err
+	}
+	if err := tmpFile.Sync(); err != nil {
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	writeSuccess = true
+	return nil
 }
 
 func (s *Store) loadJSON(path string, out any) error {

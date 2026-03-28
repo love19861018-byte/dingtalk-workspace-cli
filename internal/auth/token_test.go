@@ -14,19 +14,22 @@
 package auth
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/keychain"
 )
 
-func setupTestMAC(t *testing.T) {
+// cleanupKeychain removes test data from keychain after test completes.
+func cleanupKeychain(t *testing.T) {
 	t.Helper()
+	t.Cleanup(func() {
+		_ = keychain.Remove(keychain.Service, keychain.AccountToken)
+	})
 }
 
 func TestTokenSaveLoadAndDelete(t *testing.T) {
-	setupTestMAC(t)
+	cleanupKeychain(t)
 
 	configDir := t.TempDir()
 	now := time.Now().UTC()
@@ -42,33 +45,17 @@ func TestTokenSaveLoadAndDelete(t *testing.T) {
 		CorpName:       "测试科技",
 	}
 
+	// Save to keychain
 	if err := SaveTokenData(configDir, original); err != nil {
 		t.Fatalf("SaveTokenData() error = %v", err)
 	}
 
-	// Verify .data file was created with correct permissions.
-	dataPath := filepath.Join(configDir, secureDataFile)
-	info, err := os.Stat(dataPath)
-	if err != nil {
-		t.Fatalf("Stat(.data) error = %v", err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf(".data perms = %o, want 600", info.Mode().Perm())
-	}
-	if _, err := os.Stat(dataPath + ".tmp"); !os.IsNotExist(err) {
-		t.Fatalf(".data.tmp should not remain, stat err = %v", err)
+	// Verify data exists in keychain
+	if !TokenDataExistsKeychain() {
+		t.Fatal("TokenDataExistsKeychain() should be true after save")
 	}
 
-	// Verify .data file is NOT valid plaintext JSON (it's encrypted).
-	raw, err := os.ReadFile(dataPath)
-	if err != nil {
-		t.Fatalf("ReadFile(.data) error = %v", err)
-	}
-	var probe map[string]any
-	if json.Unmarshal(raw, &probe) == nil {
-		t.Fatal("saved .data should be encrypted, not plain JSON")
-	}
-
+	// Load and verify
 	loaded, err := LoadTokenData(configDir)
 	if err != nil {
 		t.Fatalf("LoadTokenData() error = %v", err)
@@ -83,47 +70,71 @@ func TestTokenSaveLoadAndDelete(t *testing.T) {
 		t.Fatalf("loaded corp_id = %q, want %q", loaded.CorpID, original.CorpID)
 	}
 
+	// Delete and verify
 	if err := DeleteTokenData(configDir); err != nil {
 		t.Fatalf("DeleteTokenData() error = %v", err)
+	}
+	if TokenDataExistsKeychain() {
+		t.Fatal("TokenDataExistsKeychain() should be false after delete")
 	}
 	if _, err := LoadTokenData(configDir); err == nil {
 		t.Fatal("LoadTokenData() error = nil after delete, want failure")
 	}
 }
 
-func TestTokenDecryptionFailsWithCorruptedData(t *testing.T) {
+func TestTokenOverwrite(t *testing.T) {
+	cleanupKeychain(t)
+
 	configDir := t.TempDir()
-	data := &TokenData{
-		AccessToken:  "at_test",
-		RefreshToken: "rt_test",
+
+	// Save first version
+	data1 := &TokenData{
+		AccessToken:  "at_v1",
+		RefreshToken: "rt_v1",
 		ExpiresAt:    time.Now().Add(time.Hour),
 		RefreshExpAt: time.Now().Add(24 * time.Hour),
+		CorpID:       "corp_v1",
 	}
-	if err := SaveTokenData(configDir, data); err != nil {
-		t.Fatalf("SaveTokenData() error = %v", err)
+	if err := SaveTokenData(configDir, data1); err != nil {
+		t.Fatalf("SaveTokenData(v1) error = %v", err)
 	}
 
-	dataPath := filepath.Join(configDir, secureDataFile)
-	raw, err := os.ReadFile(dataPath)
+	// Save second version (overwrite)
+	data2 := &TokenData{
+		AccessToken:  "at_v2",
+		RefreshToken: "rt_v2",
+		ExpiresAt:    time.Now().Add(2 * time.Hour),
+		RefreshExpAt: time.Now().Add(48 * time.Hour),
+		CorpID:       "corp_v2",
+	}
+	if err := SaveTokenData(configDir, data2); err != nil {
+		t.Fatalf("SaveTokenData(v2) error = %v", err)
+	}
+
+	// Load should return v2
+	loaded, err := LoadTokenData(configDir)
 	if err != nil {
-		t.Fatalf("ReadFile(.data) error = %v", err)
+		t.Fatalf("LoadTokenData() error = %v", err)
 	}
-	raw[len(raw)-1] ^= 0xFF
-	if err := os.WriteFile(dataPath, raw, 0o600); err != nil {
-		t.Fatalf("WriteFile(.data) error = %v", err)
+	if loaded.AccessToken != "at_v2" {
+		t.Fatalf("access_token = %q, want %q", loaded.AccessToken, "at_v2")
 	}
-
-	if _, err := LoadTokenData(configDir); err == nil {
-		t.Fatal("LoadTokenData with corrupted ciphertext should fail")
+	if loaded.CorpID != "corp_v2" {
+		t.Fatalf("corp_id = %q, want %q", loaded.CorpID, "corp_v2")
 	}
 }
 
-func TestSecureDataExists(t *testing.T) {
+func TestTokenDataExistsKeychain(t *testing.T) {
+	cleanupKeychain(t)
+
 	configDir := t.TempDir()
-	if SecureDataExists(configDir) {
-		t.Fatal("SecureDataExists() should be false before save")
+
+	// Should be false before save
+	if TokenDataExistsKeychain() {
+		t.Fatal("TokenDataExistsKeychain() should be false before save")
 	}
 
+	// Save data
 	data := &TokenData{
 		AccessToken: "at_test",
 		ExpiresAt:   time.Now().Add(time.Hour),
@@ -131,8 +142,10 @@ func TestSecureDataExists(t *testing.T) {
 	if err := SaveTokenData(configDir, data); err != nil {
 		t.Fatalf("SaveTokenData() error = %v", err)
 	}
-	if !SecureDataExists(configDir) {
-		t.Fatal("SecureDataExists() should be true after save")
+
+	// Should be true after save
+	if !TokenDataExistsKeychain() {
+		t.Fatal("TokenDataExistsKeychain() should be true after save")
 	}
 }
 

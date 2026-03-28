@@ -17,13 +17,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/i18n"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/i18n"
 )
 
 // oauthHTTPClient is a dedicated HTTP client for OAuth operations with
@@ -209,19 +210,34 @@ func (p *OAuthProvider) GetAccessToken(ctx context.Context) (string, error) {
 	return "", errors.New(i18n.T("所有凭证已失效，请运行 dws auth login 重新登录"))
 }
 
-// lockedRefresh attempts to refresh the token while holding a cross-process file lock.
-// It uses a double-check pattern: after acquiring the lock it re-loads from disk,
-// because another process may have already completed the refresh while we waited.
-// This prevents the classic race where two CLI processes both see an expired token
-// and both call the refresh API, invalidating each other's refresh_token.
+// lockedRefresh attempts to refresh the token while holding dual-layer locks.
+// It uses a double-check pattern with both process-level and file-level locking:
+//
+// Layer 1 (Process Lock - sync.Map):
+//
+//	Prevents multiple goroutines within the same process from refreshing simultaneously.
+//	If another goroutine is already refreshing, we wait for it and then re-check.
+//
+// Layer 2 (File Lock - flock/LockFileEx):
+//
+//	Prevents multiple CLI processes from refreshing simultaneously.
+//	If another process is refreshing, we wait for the file lock and then re-check.
+//
+// Double-Check Pattern:
+//
+//	After acquiring the lock, we re-load from disk because another goroutine/process
+//	may have already completed the refresh while we were waiting. This prevents the
+//	classic race where two callers both see an expired token and both call the
+//	refresh API, invalidating each other's refresh_token.
 func (p *OAuthProvider) lockedRefresh(ctx context.Context) (*TokenData, error) {
-	lock, err := acquireTokenLock(p.configDir)
+	// Acquire dual-layer lock (process-level + file-level)
+	lock, err := AcquireDualLock(ctx, p.configDir)
 	if err != nil {
-		return nil, fmt.Errorf("acquiring token lock: %w", err)
+		return nil, fmt.Errorf("acquiring dual lock: %w", err)
 	}
-	defer lock.release()
+	defer lock.Release()
 
-	// Double-check: re-load from disk — another process may have refreshed
+	// Double-check: re-load from disk — another goroutine/process may have refreshed
 	// while we were waiting for the lock.
 	data, err := LoadTokenData(p.configDir)
 	if err != nil {
@@ -229,7 +245,11 @@ func (p *OAuthProvider) lockedRefresh(ctx context.Context) (*TokenData, error) {
 	}
 	if data.IsAccessTokenValid() {
 		if p.logger != nil {
-			p.logger.Debug("token already refreshed by another process")
+			if lock.Waited {
+				p.logger.Debug("token already refreshed by another goroutine/process")
+			} else {
+				p.logger.Debug("token still valid after acquiring lock")
+			}
 		}
 		return data, nil
 	}
@@ -240,7 +260,7 @@ func (p *OAuthProvider) lockedRefresh(ctx context.Context) (*TokenData, error) {
 	}
 
 	if p.logger != nil {
-		p.logger.Debug("refreshing token (locked)")
+		p.logger.Debug("refreshing token (dual-locked)")
 	}
 	return p.refreshWithRefreshToken(ctx, data)
 }
