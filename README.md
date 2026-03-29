@@ -9,7 +9,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.25+-green?logo=go&logoColor=white" alt="Go 1.25+">
   <a href="https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue" alt="License Apache-2.0"></a>
-  <a href="https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases"><img src="https://img.shields.io/badge/release-v1.1.0-red" alt="v1.1.0"></a>
+  <a href="https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases"><img src="https://img.shields.io/badge/release-v1.0.3-red" alt="v1.0.3"></a>
   <a href="https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/actions/workflows/ci.yml"><img src="https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src=".github/badges/coverage.svg" alt="Coverage">
 </p>
@@ -183,7 +183,7 @@ Agents don't need pre-built knowledge of every command. Use `dws schema` to dyna
 dws schema --jq '.products[] | {id, tool_count: (.tools | length)}'
 
 # Step 2: Inspect target tool's parameter schema
-dws schema aitable.query_records --jq '.tool.input_schema'
+dws schema aitable.query_records --jq '.tool.parameters'
 
 # Step 3: Construct the correct call
 dws aitable record query --base-id BASE_ID --table-id TABLE_ID --limit 10
@@ -191,7 +191,7 @@ dws aitable record query --base-id BASE_ID --table-id TABLE_ID --limit 10
 
 ### Agent Skills
 
-The repo ships Agent Skills (`SKILL.md` files) for every DingTalk product. After installing, tools like Claude Code / Cursor can use DingTalk capabilities directly:
+The repo ships a complete Agent Skill system (`skills/`). After installing, AI tools like Claude Code / Cursor can operate DingTalk directly through natural language:
 
 ```bash
 # Install skills into current project
@@ -200,7 +200,40 @@ curl -fsSL https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace
 
 > `install.sh` installs to `$HOME/.agents/skills/dws` (global); `install-skills.sh` installs to `./.agents/skills/dws` (current project).
 
-Author your own Agent Skills and orchestrate them with dws skills for cross-product workflows: **ISV Skill → dws Skill → DingTalk Open Platform API (enforced auth + full audit)**.
+**What's included:**
+
+| Component | Path | Description |
+|-----------|------|-------------|
+| Master Skill | `SKILL.md` | Intent routing, decision tree, safety rules, error handling |
+| Product references | `references/products/*.md` | Per-product command reference (aitable, chat, calendar, etc.) |
+| Intent guide | `references/intent-guide.md` | Disambiguation for confusing scenarios (e.g. report vs todo) |
+| Global reference | `references/global-reference.md` | Auth, output formats, global flags |
+| Error codes | `references/error-codes.md` | Error codes + debugging workflows |
+| Recovery guide | `references/recovery-guide.md` | `RECOVERY_EVENT_ID` handling |
+| Ready-made scripts | `scripts/*.py` | 13 batch operation scripts (see below) |
+
+<details>
+<summary><strong>Ready-made scripts</strong> — 13 Python scripts for common multi-step workflows</summary>
+
+| Script | Description |
+|--------|-------------|
+| `calendar_schedule_meeting.py` | Create event + add participants + find & book available meeting room |
+| `calendar_free_slot_finder.py` | Find common free slots across multiple people, recommend best meeting time |
+| `calendar_today_agenda.py` | View today/tomorrow/this week's schedule |
+| `import_records.py` | Batch import records from CSV/JSON into AITable |
+| `bulk_add_fields.py` | Batch add fields to an AITable data table |
+| `upload_attachment.py` | Upload attachment to AITable attachment field |
+| `todo_batch_create.py` | Batch create todos from JSON (with priority, due date, executors) |
+| `todo_daily_summary.py` | Summarize today/this week's incomplete todos |
+| `todo_overdue_check.py` | Scan overdue todos and output overdue list |
+| `contact_dept_members.py` | Search department by name and list all members |
+| `attendance_my_record.py` | View my attendance records for today/this week/specific date |
+| `attendance_team_shift.py` | Query team shift schedules and attendance statistics |
+| `report_inbox_today.py` | View today's received reports with details |
+
+</details>
+
+**ISV Integration**: Author your own Agent Skills and orchestrate them with dws skills for cross-product workflows: **ISV Skill → dws Skill → DingTalk Open Platform API (enforced auth + full audit)**.
 
 ## Features
 
@@ -253,7 +286,7 @@ dws aitable record query --base-id BASE_ID --table-id TABLE_ID --fields invocati
 ```bash
 dws schema                                              # list all products and tools
 dws schema aitable.query_records                        # view parameter schema
-dws schema aitable.query_records --jq '.tool.input_schema.required'   # view required fields
+dws schema aitable.query_records --jq '.tool.required'   # view required fields
 dws schema --jq '.products[].id'                        # extract all product IDs
 ```
 
@@ -280,21 +313,22 @@ dws chat message send-by-bot --robot-code BOT_CODE --group GROUP_ID \
 
 ## Key Services
 
-| Service | Command | Description |
-|---------|---------|-------------|
-| Contact | `contact` | Users / departments |
-| Chat | `chat` | Group management / members / bot messaging / webhook |
-| Calendar | `calendar` | Events / meeting rooms / free-busy |
-| Todo | `todo` | Task management |
-| Approval | `oa` | Processes / forms / instances |
-| Attendance | `attendance` | Clock-in / shifts / statistics |
-| Ding | `ding` | DING messages / send / recall |
-| Report | `report` | Reports / templates / statistics |
-| AITable | `aitable` | AI table operations |
-| Workbench | `workbench` | App query |
-| DevDoc | `devdoc` | Open platform docs search |
+| Service | Command | Tools | Subcommands | Description |
+|---------|---------|:-----:|-------------|-------------|
+| Contact | `contact` | 8 | `user` `dept` | Search users by name/mobile, batch query, departments, current user profile |
+| Chat | `chat` | 14 | `message` `group` `bot` `search` | Group CRUD, member management, message history, topic replies, send as user |
+| Bot | `chat bot` | 9 | — | Robot creation, group/single messaging, webhook, message recall |
+| Calendar | `calendar` | 13 | `event` `room` `participant` `busy` | Events CRUD, meeting room booking, free-busy query, participant management |
+| Todo | `todo` | 6 | `task` | Create, list, update, done, get detail, delete |
+| Approval | `oa` | 9 | `approval` | Approve/reject/revoke, pending tasks, initiated instances, process list |
+| Attendance | `attendance` | 4 | `record` `shift` `summary` `rules` | Clock-in records, shift schedules, attendance summary, group rules |
+| Ding | `ding` | 3 | `message` | Send/recall DING messages |
+| Report | `report` | 7 | `create` `list` `detail` `template` `stats` `sent` | Create reports, sent/received list, templates, statistics |
+| AITable | `aitable` | 27 | `base` `table` `record` `field` `attachment` `template` | Full CRUD for bases/tables/records/fields, views, import/export, templates |
+| Workbench | `workbench` | 2 | `app` | Batch query app details |
+| DevDoc | `devdoc` | 2 | `article` | Search platform docs and error codes |
 
-Run `dws --help` for the full list, or `dws <service> --help` for subcommands.
+> 104 tools across 12 products. Run `dws --help` for the full list, or `dws <service> --help` for subcommands.
 
 <details>
 <summary>Coming soon</summary>
