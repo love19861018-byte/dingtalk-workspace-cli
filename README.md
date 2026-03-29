@@ -173,8 +173,11 @@ dws todo task list --dry-run                       # 预览操作但不执行
 
 | 机制 | 说明 |
 |------|------|
-| **Token 加密存储** | **PBKDF2（600,000 次迭代）+ AES-256-GCM** 加密，密钥由设备 MAC 地址派生，文件拷贝到其他设备无法解密 |
+| **Token 加密存储** | **PBKDF2（600,000 次迭代 + SHA-256）+ AES-256-GCM** 加密，密钥绑定设备物理 MAC 地址；macOS 集成系统 Keychain、Windows 集成 DPAPI 提供额外保护，跨设备无法解密 |
+| **输入安全防护** | 路径遍历防护（符号链接解析 + 工作目录约束）、CRLF 注入拦截、Unicode 视觉欺骗字符过滤，防止 AI Agent 被恶意指令诱导 |
 | **域名白名单** | `DWS_TRUSTED_DOMAINS` 默认仅信任 `*.dingtalk.com`，Bearer Token 不会发送到非白名单域 |
+| **并发安全** | 双层锁机制（进程内 + 跨进程文件锁）保障 Token 刷新原子性，适配高并发 MCP Server 场景 |
+| **数据完整性** | 所有配置写入采用原子操作（temp + fsync + rename），确保进程中断时数据不损坏 |
 | **HTTPS 强制** | 除 loopback 开发调试外，所有请求强制 TLS |
 | **Dry-run 预览** | `--dry-run` 展示调用参数但不执行，防止误操作生产数据 |
 | **凭证零落盘** | Client ID / Secret 仅在内存中使用，不写入配置文件或日志 |

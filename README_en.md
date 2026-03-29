@@ -172,8 +172,9 @@ Run `dws --help` for the full list, or `dws <service> --help` for subcommands.
 <summary><strong>For Developers</strong></summary>
 
 | Mechanism | Details |
-|-----------|---------|
-| **Encrypted token storage** | **PBKDF2 (600,000 iterations) + AES-256-GCM**, keyed by device MAC address — tokens cannot be decrypted on another machine |
+|-----------|----------|
+| **Encrypted token storage** | **PBKDF2 + AES-256-GCM** encryption, keyed by device physical MAC address; cross-platform Keychain/DPAPI integration provides additional protection — tokens cannot be decrypted on another machine |
+| **Input security** | Path traversal protection (symlink resolution + working directory containment), CRLF injection blocking, Unicode visual spoofing filtering — prevents AI Agents from being tricked by malicious instructions |
 | **Domain allowlist** | `DWS_TRUSTED_DOMAINS` defaults to `*.dingtalk.com`; bearer tokens are never sent to non-allowlisted domains |
 | **HTTPS enforced** | All requests require TLS; HTTP only permitted for loopback during development |
 | **Dry-run preview** | `--dry-run` shows call parameters without executing, preventing accidental mutations |
