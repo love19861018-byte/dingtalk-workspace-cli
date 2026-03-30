@@ -254,7 +254,7 @@ curl -fsSL https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace
 ## Features
 
 <details>
-<summary><strong>Smart Input Correction</strong> — auto-corrects common AI model parameter mistakes <code>v1.0.1</code></summary>
+<summary><strong>Smart Input Correction</strong> — auto-corrects common AI model parameter mistakes</summary>
 
 Built-in pipeline engine that normalizes flag names, splits sticky arguments, and fuzzy-matches typos:
 
@@ -283,7 +283,7 @@ dws aitable record query --base-id BASE_ID --tabel-id TABLE_ID       # --tabel-i
 </details>
 
 <details>
-<summary><strong>jq Filtering & Field Selection</strong> — fine-grained output control to reduce token consumption <code>v1.0.1</code></summary>
+<summary><strong>jq Filtering & Field Selection</strong> — fine-grained output control to reduce token consumption</summary>
 
 ```bash
 # Built-in jq expressions
@@ -297,7 +297,7 @@ dws aitable record query --base-id BASE_ID --table-id TABLE_ID --fields invocati
 </details>
 
 <details>
-<summary><strong>Schema Introspection</strong> — query parameter schemas before making calls <code>v1.0.1</code></summary>
+<summary><strong>Schema Introspection</strong> — query parameter schemas before making calls</summary>
 
 ```bash
 dws schema                                              # list all products and tools
@@ -309,7 +309,7 @@ dws schema --jq '.products[].id'                        # extract all product ID
 </details>
 
 <details>
-<summary><strong>Pipe & File Input</strong> — read flag values from files or stdin <code>v1.0.1</code></summary>
+<summary><strong>Pipe & File Input</strong> — read flag values from files or stdin</summary>
 
 ```bash
 # Read message body from a file
@@ -332,7 +332,7 @@ dws chat message send-by-bot --robot-code BOT_CODE --group GROUP_ID \
 | Service | Command | Tools | Subcommands | Description |
 |---------|---------|:-----:|-------------|-------------|
 | Contact | `contact` | 8 | `user` `dept` | Search users by name/mobile, batch query, departments, current user profile |
-| Chat | `chat` | 14 | `message` `group` `bot` `search` | Group CRUD, member management, message history, topic replies, send as user |
+| Chat | `chat` | 14 | `message` `group` `bot` `search` | Group CRUD, member management, topic replies, send as user |
 | Bot | `chat bot` | 9 | — | Robot creation, group/single messaging, webhook, message recall |
 | Calendar | `calendar` | 13 | `event` `room` `participant` `busy` | Events CRUD, meeting room booking, free-busy query, participant management |
 | Todo | `todo` | 6 | `task` | Create, list, update, done, get detail, delete |

@@ -69,3 +69,4 @@ release:
   draft: false
   prerelease: auto
   name_template: "v{{.Version}}"
+  mode: replace
