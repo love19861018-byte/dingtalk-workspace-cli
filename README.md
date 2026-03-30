@@ -66,6 +66,11 @@ irm https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/ma
 
 **Pre-built binary**: download from [GitHub Releases](https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases).
 
+> **macOS users**: If you see "cannot be opened because Apple cannot check it for malicious software", run:
+> ```bash
+> xattr -d com.apple.quarantine /path/to/dws
+> ```
+
 **Build from source**:
 
 ```bash
@@ -97,8 +102,7 @@ Go to the [Open Platform Console](https://open-dev.dingtalk.com/fe/app?hash=%23%
 Go to app settings → **Security Settings**. Add the following redirect URLs and save:
 
 ```
-http://127.0.0.1
-https://login.dingtalk.com
+http://127.0.0.1,https://login.dingtalk.com
 ```
 
 > `http://127.0.0.1` is for local browser login; `https://login.dingtalk.com` is for `--device` device-flow login (Docker containers, remote servers, and other headless environments). We recommend configuring both.

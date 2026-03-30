@@ -66,6 +66,11 @@ irm https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/ma
 
 **预编译二进制文件**：从 [GitHub Releases](https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases) 下载。
 
+> **macOS 用户注意**：如果提示“无法打开，因为 Apple 无法检查其是否包含恶意软件”，请执行：
+> ```bash
+> xattr -d com.apple.quarantine /path/to/dws
+> ```
+
 **从源码构建**：
 
 ```bash
@@ -97,8 +102,7 @@ cp dws ~/.local/bin/         # 安装到 PATH
 进入应用 → **安全设置**，在「重定向 URL」中添加以下地址并保存：
 
 ```
-http://127.0.0.1
-https://login.dingtalk.com
+http://127.0.0.1,https://login.dingtalk.com
 ```
 
 > `http://127.0.0.1` 用于本地浏览器登录；`https://login.dingtalk.com` 用于 `--device` 设备流登录（Docker 容器、远程服务器等无浏览器环境）。建议两个都配置。
