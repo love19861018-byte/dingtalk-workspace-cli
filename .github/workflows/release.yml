@@ -37,6 +37,8 @@ jobs:
 
       - name: Post-release packaging
         run: ./scripts/release/post-goreleaser.sh
+        env:
+          DWS_PACKAGE_VERSION: ${{ github.ref_name }}
 
       - name: Upload dws-skills.zip to release
         env:
