@@ -185,8 +185,18 @@ func newAuthLogoutCommand() *cobra.Command {
 			defer cancel()
 			_ = authpkg.RevokeTokenRemote(revokeCtx)
 
+			// Load token data to get associated clientId before deletion
+			var storedClientID string
+			if tokenData, err := authpkg.LoadTokenData(configDir); err == nil && tokenData != nil {
+				storedClientID = tokenData.ClientID
+			}
+
 			if err := authpkg.DeleteTokenData(configDir); err != nil {
 				return apperrors.NewInternal(fmt.Sprintf("failed to clear token data: %v", err))
+			}
+			// Clean up associated client secret from keychain
+			if storedClientID != "" {
+				_ = authpkg.DeleteClientSecret(storedClientID)
 			}
 			// Clean up app credentials (app.json + keychain secret)
 			_ = authpkg.DeleteAppConfig(configDir)

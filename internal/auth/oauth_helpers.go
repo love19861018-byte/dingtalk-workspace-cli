@@ -32,9 +32,11 @@ func (p *OAuthProvider) exchangeCode(ctx context.Context, code string) (*TokenDa
 		return p.exchangeCodeViaMCP(ctx, code)
 	}
 	// Direct mode with client secret
+	clientID := ClientID()
+	clientSecret := ClientSecret()
 	body := map[string]string{
-		"clientId":     ClientID(),
-		"clientSecret": ClientSecret(),
+		"clientId":     clientID,
+		"clientSecret": clientSecret,
 		"code":         code,
 		"grantType":    "authorization_code",
 	}
@@ -42,15 +44,28 @@ func (p *OAuthProvider) exchangeCode(ctx context.Context, code string) (*TokenDa
 	if err != nil {
 		return nil, err
 	}
-	return p.parseTokenResponse(resp)
+	data, err := p.parseTokenResponse(resp)
+	if err != nil {
+		return nil, err
+	}
+	// Snapshot credentials used for this token (for refresh)
+	data.ClientID = clientID
+	data.Source = resolveCredentialSource()
+	// Save clientSecret for future refresh (even if env changes)
+	if err := SaveClientSecret(clientID, clientSecret); err != nil {
+		// Log warning but don't fail login
+		fmt.Fprintf(p.Output, "Warning: failed to save client secret: %v\n", err)
+	}
+	return data, nil
 }
 
 // exchangeCodeViaMCP exchanges auth code for token via MCP proxy.
 // This is used when client secret is not available (server-side secret management).
 func (p *OAuthProvider) exchangeCodeViaMCP(ctx context.Context, code string) (*TokenData, error) {
+	clientID := ClientID()
 	url := GetMCPBaseURL() + MCPOAuthTokenPath
 	body := map[string]string{
-		"clientId":  ClientID(),
+		"clientId":  clientID,
 		"authCode":  code,
 		"grantType": "authorization_code",
 	}
@@ -58,18 +73,43 @@ func (p *OAuthProvider) exchangeCodeViaMCP(ctx context.Context, code string) (*T
 	if err != nil {
 		return nil, err
 	}
-	return p.parseMCPTokenResponse(resp)
+	data, err := p.parseMCPTokenResponse(resp)
+	if err != nil {
+		return nil, err
+	}
+	// Snapshot credentials used for this token (for refresh)
+	data.ClientID = clientID
+	data.Source = "mcp"
+	// MCP mode doesn't need to save clientSecret (server-side managed)
+	return data, nil
 }
 
 func (p *OAuthProvider) refreshWithRefreshToken(ctx context.Context, data *TokenData) (*TokenData, error) {
-	// Use MCP mode if clientID is from MCP server
-	if IsClientIDFromMCP() {
+	// Use stored Source to determine refresh path (not current runtime state)
+	// This ensures refresh works even if environment variables changed since login
+	if data.Source == "mcp" {
 		return p.refreshViaMCP(ctx, data)
 	}
-	// Direct mode with client secret
+
+	// Direct mode: use stored clientId and load saved clientSecret
+	clientID := data.ClientID
+	if clientID == "" {
+		// Fallback for legacy tokens without stored clientId
+		clientID = ClientID()
+	}
+	clientSecret := LoadClientSecret(clientID)
+	if clientSecret == "" {
+		// Fallback: try current environment
+		clientSecret = ClientSecret()
+	}
+
+	if clientID == "" || clientSecret == "" {
+		return nil, fmt.Errorf("无法刷新 token: 缺少 clientId 或 clientSecret，请重新登录")
+	}
+
 	body := map[string]string{
-		"clientId":     ClientID(),
-		"clientSecret": ClientSecret(),
+		"clientId":     clientID,
+		"clientSecret": clientSecret,
 		"refreshToken": data.RefreshToken,
 		"grantType":    "refresh_token",
 	}
@@ -81,6 +121,9 @@ func (p *OAuthProvider) refreshWithRefreshToken(ctx context.Context, data *Token
 	if err != nil {
 		return nil, err
 	}
+	// Preserve original credentials info
+	updated.ClientID = data.ClientID
+	updated.Source = data.Source
 	updated.PersistentCode = data.PersistentCode
 	updated.CorpID = data.CorpID
 	updated.UserID = data.UserID
@@ -95,9 +138,20 @@ func (p *OAuthProvider) refreshWithRefreshToken(ctx context.Context, data *Token
 
 // refreshViaMCP refreshes token via MCP proxy.
 func (p *OAuthProvider) refreshViaMCP(ctx context.Context, data *TokenData) (*TokenData, error) {
+	// Use stored clientId from token data
+	clientID := data.ClientID
+	if clientID == "" {
+		// Fallback for legacy tokens
+		clientID = ClientID()
+	}
+
+	if clientID == "" {
+		return nil, fmt.Errorf("无法刷新 token: 缺少 clientId，请重新登录")
+	}
+
 	url := GetMCPBaseURL() + MCPRefreshTokenPath
 	body := map[string]string{
-		"clientId":     ClientID(),
+		"clientId":     clientID,
 		"refreshToken": data.RefreshToken,
 		"grantType":    "refresh_token",
 	}
@@ -109,6 +163,9 @@ func (p *OAuthProvider) refreshViaMCP(ctx context.Context, data *TokenData) (*To
 	if err != nil {
 		return nil, err
 	}
+	// Preserve original credentials info
+	updated.ClientID = data.ClientID
+	updated.Source = data.Source
 	updated.PersistentCode = data.PersistentCode
 	updated.CorpID = data.CorpID
 	updated.UserID = data.UserID
