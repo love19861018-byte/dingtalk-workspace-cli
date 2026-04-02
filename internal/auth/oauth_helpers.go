@@ -957,7 +957,7 @@ type SendApplyResponse struct {
 const mcpRequestMaxRetries = 3
 
 // CheckCLIAuthEnabled checks if CLI authorization is enabled for the current corp.
-// It retries up to cliAuthCheckMaxRetries times on transient errors to avoid
+// It retries up to mcpRequestMaxRetries times on transient errors to avoid
 // false negatives caused by momentary network issues.
 func (p *OAuthProvider) CheckCLIAuthEnabled(ctx context.Context, accessToken string) (*CLIAuthStatus, error) {
 	var lastErr error
