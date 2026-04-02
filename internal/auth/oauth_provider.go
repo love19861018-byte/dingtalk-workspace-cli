@@ -234,18 +234,18 @@ func (p *OAuthProvider) Login(ctx context.Context, force bool) (*TokenData, erro
 		}
 		callbackTokenMu.Unlock()
 
-		// Check CLI auth enabled status
+		// Check CLI auth enabled status (fail-closed: treat errors as disabled)
 		authStatus, statusErr := p.CheckCLIAuthEnabled(ctx, tokenData.AccessToken)
-		cliAuthDisabled := statusErr == nil && authStatus.Success && !authStatus.Result.CLIAuthEnabled
+		cliAuthEnabled := statusErr == nil && authStatus.Success && authStatus.Result.CLIAuthEnabled
 
 		// Update CLI auth disabled state
 		callbackTokenMu.Lock()
-		callbackAuthDisabled = cliAuthDisabled
+		callbackAuthDisabled = !cliAuthEnabled
 		callbackTokenMu.Unlock()
 
 		// Display appropriate HTML based on CLI auth status
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if cliAuthDisabled {
+		if !cliAuthEnabled {
 			_, _ = fmt.Fprint(w, notEnabledHTML)
 		} else {
 			_, _ = fmt.Fprint(w, successHTML)
@@ -256,7 +256,7 @@ func (p *OAuthProvider) Login(ctx context.Context, force bool) (*TokenData, erro
 		}
 		// Notify main goroutine with full result
 		select {
-		case resultCh <- callbackResult{token: tokenData, cliAuthDisabled: cliAuthDisabled}:
+		case resultCh <- callbackResult{token: tokenData, cliAuthDisabled: !cliAuthEnabled}:
 		default:
 		}
 	})
