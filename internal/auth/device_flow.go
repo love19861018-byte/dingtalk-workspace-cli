@@ -26,8 +26,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/config"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/i18n"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/config"
 	"github.com/fatih/color"
 )
 
@@ -96,6 +96,23 @@ type serviceResult struct {
 }
 
 func (p *DeviceFlowProvider) Login(ctx context.Context) (*TokenData, error) {
+	// Ensure we have a valid client ID (fetch from MCP if not available)
+	if p.clientID == "" {
+		if p.logger != nil {
+			p.logger.Debug("client ID not configured, fetching from MCP server")
+		}
+		mcpClientID, mcpErr := FetchClientIDFromMCP(ctx)
+		if mcpErr != nil {
+			return nil, fmt.Errorf("%s: %w", i18n.T("获取 Client ID 失败"), mcpErr)
+		}
+		p.clientID = mcpClientID
+		// Mark that clientID is from MCP
+		SetClientIDFromMCP(mcpClientID)
+		if p.logger != nil {
+			p.logger.Debug("fetched client ID from MCP server", "clientID", mcpClientID)
+		}
+	}
+
 	const maxAttempts = 3
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		tokenData, err := p.loginOnce(ctx, attempt)
@@ -148,6 +165,44 @@ func (p *DeviceFlowProvider) loginOnce(ctx context.Context, attempt int) (*Token
 	tokenData, err := oauthProvider.exchangeCode(ctx, tokenResult.AuthCode)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", i18n.T("换取 token 失败"), err)
+	}
+
+	// Check if CLI auth is enabled for this organization (fail-closed: block on error)
+	dfPrintStep(p.output(), 4, i18n.T("检查组织 CLI 授权状态..."), 0)
+	authStatus, authErr := oauthProvider.CheckCLIAuthEnabled(ctx, tokenData.AccessToken)
+	if authErr != nil {
+		_, _ = fmt.Fprintln(p.output(), "")
+		_, _ = fmt.Fprintln(p.output(), dfRed(i18n.T("⚠️  无法检查 CLI 数据访问权限状态")))
+		_, _ = fmt.Fprintln(p.output(), i18n.T("   请检查网络连接后重试。"))
+		_, _ = fmt.Fprintln(p.output(), "")
+		return nil, fmt.Errorf("%s: %w", i18n.T("检查 CLI 授权状态失败"), authErr)
+	} else if authStatus.Success && !authStatus.Result.CLIAuthEnabled {
+		// CLI auth is disabled - show detailed error with admin info
+		_, _ = fmt.Fprintln(p.output(), "")
+		_, _ = fmt.Fprintln(p.output(), dfRed(i18n.T("⚠️  该组织尚未开启 CLI 数据访问权限")))
+		_, _ = fmt.Fprintln(p.output(), i18n.T("   你所选择的组织管理员尚未开启「允许成员通过 CLI 访问其个人数据」的权限。"))
+		_, _ = fmt.Fprintln(p.output(), "")
+
+		// Try to get super admin list
+		admins, adminErr := GetSuperAdmins(ctx, tokenData.AccessToken)
+		if adminErr == nil && admins.Success && len(admins.Result) > 0 {
+			// Show up to 3 admins
+			maxAdmins := 3
+			if len(admins.Result) < maxAdmins {
+				maxAdmins = len(admins.Result)
+			}
+			var adminNames []string
+			for i := 0; i < maxAdmins; i++ {
+				adminNames = append(adminNames, admins.Result[i].Name)
+			}
+			_, _ = fmt.Fprintf(p.output(), "   %s%s\n", i18n.T("组织主管理员："), strings.Join(adminNames, "、"))
+		}
+
+		_, _ = fmt.Fprintln(p.output(), i18n.T("   请联系组织主管理员开启后重新登录。"))
+		_, _ = fmt.Fprintln(p.output(), "")
+		_, _ = fmt.Fprintln(p.output(), i18n.T("   管理员操作入口：https://open-dev.dingtalk.com/fe/old#/developerSettings"))
+		_, _ = fmt.Fprintln(p.output(), "")
+		return nil, errors.New(i18n.T("该组织尚未开启 CLI 数据访问权限，请联系管理员开启"))
 	}
 
 	// Save token data with associated client ID for refresh
