@@ -16,6 +16,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -29,21 +30,50 @@ import (
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/cli"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/cobracmd"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/compat"
-	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/config"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/executor"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/helpers"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/market"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/config"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 	"github.com/spf13/cobra"
 )
 
 func newLegacyPublicCommands(ctx context.Context, runner executor.Runner) []*cobra.Command {
+	if fn := edition.Get().StaticServers; fn != nil {
+		injectStaticServers(fn())
+		// Static servers provided by the edition hook — skip Market discovery
+		// entirely. The overlay registers its own product commands via
+		// RegisterExtraCommands; we only add the open-source helpers here.
+		commands := helpers.NewPublicCommands(runner)
+		return mergeTopLevelCommands(commands)
+	}
+
 	var commands []*cobra.Command
-	// Generate commands dynamically from the market discovery API.
 	if dynamicCmds := loadDynamicCommands(ctx, runner); len(dynamicCmds) > 0 {
 		commands = append(commands, dynamicCmds...)
 	}
 	commands = append(commands, helpers.NewPublicCommands(runner)...)
 	return mergeTopLevelCommands(commands)
+}
+
+// injectStaticServers converts edition.ServerInfo entries into
+// market.ServerDescriptor and feeds them into SetDynamicServers so the
+// direct-runtime endpoint resolver can find them.
+func injectStaticServers(servers []edition.ServerInfo) {
+	descriptors := make([]market.ServerDescriptor, 0, len(servers))
+	for _, s := range servers {
+		descriptors = append(descriptors, market.ServerDescriptor{
+			Key:         s.ID,
+			DisplayName: s.Name,
+			Endpoint:    s.Endpoint,
+			CLI: market.CLIOverlay{
+				ID:       s.ID,
+				Command:  s.ID,
+				Prefixes: s.Prefixes,
+			},
+		})
+	}
+	SetDynamicServers(descriptors)
 }
 
 // loadDynamicCommands loads the server registry and generates CLI commands
@@ -59,6 +89,12 @@ func newLegacyPublicCommands(ctx context.Context, runner executor.Runner) []*cob
 // Tests may override discoveryBaseURLOverride to redirect to a local server;
 // in that case the registry cache is always bypassed.
 func loadDynamicCommands(ctx context.Context, runner executor.Runner) []*cobra.Command {
+	totalStart := time.Now()
+	defer func() {
+		if os.Getenv("DWS_PERF_DEBUG") != "" {
+			_, _ = fmt.Fprintf(os.Stderr, "[PERF] loadDynamicCommands total: %v\n", time.Since(totalStart))
+		}
+	}()
 
 	store := cacheStoreFromEnv()
 	partition := config.DefaultPartition
@@ -70,13 +106,20 @@ func loadDynamicCommands(ctx context.Context, runner executor.Runner) []*cobra.C
 	useCache := strings.TrimSpace(os.Getenv(cli.CatalogFixtureEnv)) == ""
 
 	// --- Cache-first server registry ---
+	cacheLoadStart := time.Now()
 	snapshot, freshness, cacheErr := store.LoadRegistry(partition)
+	if os.Getenv("DWS_PERF_DEBUG") != "" {
+		_, _ = fmt.Fprintf(os.Stderr, "[PERF] cache load: %v (err=%v)\n", time.Since(cacheLoadStart), cacheErr)
+	}
+
 	var servers []market.ServerDescriptor
 	now := store.Now().UTC()
 	usingCachedRegistry := useCache && cacheErr == nil && len(snapshot.Servers) > 0
 
 	if usingCachedRegistry {
-		slog.Debug("loadDynamicCommands: using cached registry", "servers", len(snapshot.Servers), "freshness", freshness)
+		if os.Getenv("DWS_PERF_DEBUG") != "" {
+			_, _ = fmt.Fprintf(os.Stderr, "[PERF] using cached registry: servers=%d, freshness=%s\n", len(snapshot.Servers), freshness)
+		}
 		servers = snapshot.Servers
 		// Only trigger async revalidation in production (no URL override).
 		// Tests set discoveryBaseURLOverride and control cache expiry directly,
@@ -92,9 +135,15 @@ func loadDynamicCommands(ctx context.Context, runner executor.Runner) []*cobra.C
 		if discoveryBaseURLOverride != "" {
 			baseURL = discoveryBaseURLOverride
 		}
-		slog.Debug("loadDynamicCommands: fetching servers from market API", "base_url", baseURL)
+		if os.Getenv("DWS_PERF_DEBUG") != "" {
+			_, _ = fmt.Fprintf(os.Stderr, "[PERF] fetching from market API: %s\n", baseURL)
+		}
+		fetchStart := time.Now()
 		client := market.NewClient(baseURL, ipv4OnlyHTTPClient())
 		resp, fetchErr := client.FetchServers(ctx, config.DefaultFetchServersLimit)
+		if os.Getenv("DWS_PERF_DEBUG") != "" {
+			_, _ = fmt.Fprintf(os.Stderr, "[PERF] market API fetch: %v (err=%v)\n", time.Since(fetchStart), fetchErr)
+		}
 		if fetchErr != nil {
 			slog.Debug("loadDynamicCommands: market API fetch failed", "error", fetchErr)
 			// Degrade to stale cache if available (production only).
@@ -106,11 +155,17 @@ func loadDynamicCommands(ctx context.Context, runner executor.Runner) []*cobra.C
 			}
 		} else {
 			servers = market.NormalizeServers(resp, "market")
-			slog.Debug("loadDynamicCommands: normalized servers", "count", len(servers))
+			if os.Getenv("DWS_PERF_DEBUG") != "" {
+				_, _ = fmt.Fprintf(os.Stderr, "[PERF] normalized servers: %d\n", len(servers))
+			}
 			// Persist fresh data (only in non-test mode).
 			if useCache {
+				saveStart := time.Now()
 				if saveErr := store.SaveRegistry(partition, cache.RegistrySnapshot{Servers: servers}); saveErr != nil {
 					slog.Debug("loadDynamicCommands: failed to save registry cache", "error", saveErr)
+				}
+				if os.Getenv("DWS_PERF_DEBUG") != "" {
+					_, _ = fmt.Fprintf(os.Stderr, "[PERF] cache save: %v\n", time.Since(saveStart))
 				}
 			}
 		}
@@ -122,9 +177,17 @@ func loadDynamicCommands(ctx context.Context, runner executor.Runner) []*cobra.C
 	// Inject dynamic server data for endpoint resolution
 	SetDynamicServers(servers)
 
+	detailStart := time.Now()
 	detailsByID := loadCachedDetailsFast(store, servers)
+	if os.Getenv("DWS_PERF_DEBUG") != "" {
+		_, _ = fmt.Fprintf(os.Stderr, "[PERF] load details: %v\n", time.Since(detailStart))
+	}
+
+	buildStart := time.Now()
 	cmds := compat.BuildDynamicCommands(servers, runner, detailsByID)
-	slog.Debug("loadDynamicCommands: built dynamic commands", "commands", len(cmds))
+	if os.Getenv("DWS_PERF_DEBUG") != "" {
+		_, _ = fmt.Fprintf(os.Stderr, "[PERF] build commands: %v (count=%d)\n", time.Since(buildStart), len(cmds))
+	}
 
 	return cmds
 }

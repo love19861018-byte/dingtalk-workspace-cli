@@ -15,6 +15,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/i18n"
@@ -92,6 +94,23 @@ func (p *OAuthProvider) Login(ctx context.Context, force bool) (*TokenData, erro
 	}
 
 	// Fall through: full browser OAuth flow.
+	// Ensure we have a valid client ID (fetch from MCP if not available)
+	if p.clientID == "" {
+		if p.logger != nil {
+			p.logger.Debug("client ID not configured, fetching from MCP server")
+		}
+		mcpClientID, mcpErr := FetchClientIDFromMCP(ctx)
+		if mcpErr != nil {
+			return nil, fmt.Errorf("%s: %w", i18n.T("获取 Client ID 失败"), mcpErr)
+		}
+		p.clientID = mcpClientID
+		// Mark that clientID is from MCP, so we use MCP OAuth endpoints
+		SetClientIDFromMCP(mcpClientID)
+		if p.logger != nil {
+			p.logger.Debug("fetched client ID from MCP server", "clientID", mcpClientID)
+		}
+	}
+
 	// Find a free port for the callback server.
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -100,15 +119,79 @@ func (p *OAuthProvider) Login(ctx context.Context, force bool) (*TokenData, erro
 	port := listener.Addr().(*net.TCPAddr).Port
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d%s", port, CallbackPath)
 
-	codeCh := make(chan string, 1)
+	// Channel to pass callback result (token data or error with CLI auth status)
+	type callbackResult struct {
+		token           *TokenData
+		err             error
+		cliAuthDisabled bool
+	}
+	resultCh := make(chan callbackResult, 1)
 	errCh := make(chan error, 1)
+
+	// Shared state for API handlers (protected by mutex)
+	var (
+		callbackToken           *TokenData
+		callbackProcessedCode   string // The auth code that has been successfully processed
+		callbackAuthDisabled    bool
+		callbackApplySent       bool   // Whether apply request was sent
+		callbackSelectedAdminId string // Selected admin ID for apply
+		callbackCodeInProgress  string // Code currently being processed (to prevent concurrent exchange)
+		callbackTokenMu         sync.Mutex
+	)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(CallbackPath, func(w http.ResponseWriter, r *http.Request) {
+		// Get code first to check if this is a new authorization or page refresh
 		code := r.URL.Query().Get("authCode")
 		if code == "" {
 			code = r.URL.Query().Get("code")
 		}
+
+		// Check state and handle page refresh or concurrent requests
+		callbackTokenMu.Lock()
+		processedCode := callbackProcessedCode
+		processedAuthDisabled := callbackAuthDisabled
+		codeInProgress := callbackCodeInProgress
+		hasToken := callbackToken != nil
+
+		// Case 1: This code was already successfully processed - show cached page
+		if code != "" && code == processedCode {
+			callbackTokenMu.Unlock()
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if processedAuthDisabled {
+				_, _ = fmt.Fprint(w, notEnabledHTML)
+			} else {
+				_, _ = fmt.Fprint(w, successHTML)
+			}
+			return
+		}
+
+		// Case 2: This code is being processed by another request - show wait page
+		if code != "" && code == codeInProgress {
+			callbackTokenMu.Unlock()
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = fmt.Fprint(w, `<html><head><meta http-equiv="refresh" content="1"></head><body><p>正在处理授权，请稍候...</p></body></html>`)
+			return
+		}
+
+		// Case 3: No code but we have a processed token - show cached page
+		if code == "" && hasToken {
+			callbackTokenMu.Unlock()
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if processedAuthDisabled {
+				_, _ = fmt.Fprint(w, notEnabledHTML)
+			} else {
+				_, _ = fmt.Fprint(w, successHTML)
+			}
+			return
+		}
+
+		// Case 4: New code - mark as in-progress and process
+		if code != "" {
+			callbackCodeInProgress = code
+		}
+		callbackTokenMu.Unlock()
+
 		if code == "" {
 			select {
 			case errCh <- errors.New(i18n.T("回调中未收到授权码")):
@@ -118,22 +201,149 @@ func (p *OAuthProvider) Login(ctx context.Context, force bool) (*TokenData, erro
 			_, _ = fmt.Fprint(w, i18n.T("授权失败：未收到授权码"))
 			return
 		}
-		// Write response FIRST before notifying main goroutine
-		// This prevents race condition where server.Shutdown is called
-		// before response is fully sent
+
+		// Exchange code for token
+		tokenData, exchangeErr := p.exchangeCode(ctx, code)
+		if exchangeErr != nil {
+			// Clear in-progress state on error
+			callbackTokenMu.Lock()
+			if callbackCodeInProgress == code {
+				callbackCodeInProgress = ""
+			}
+			callbackTokenMu.Unlock()
+
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = fmt.Fprintf(w, "<html><body><h1>授权失败</h1><p>%s</p></body></html>", exchangeErr.Error())
+			select {
+			case resultCh <- callbackResult{err: exchangeErr}:
+			default:
+			}
+			return
+		}
+
+		// Mark as processed immediately after successful exchange
+		callbackTokenMu.Lock()
+		previouslyProcessed := callbackProcessedCode != ""
+		callbackToken = tokenData
+		callbackProcessedCode = code // Remember this code was successfully processed
+		callbackCodeInProgress = ""  // Clear in-progress state
+		// Reset apply state for new authorization (user switched org)
+		if previouslyProcessed {
+			callbackApplySent = false
+			callbackSelectedAdminId = ""
+		}
+		callbackTokenMu.Unlock()
+
+		// Check CLI auth enabled status (fail-closed: treat errors as disabled)
+		authStatus, statusErr := p.CheckCLIAuthEnabled(ctx, tokenData.AccessToken)
+		cliAuthEnabled := statusErr == nil && authStatus.Success && authStatus.Result.CLIAuthEnabled
+
+		// Update CLI auth disabled state
+		callbackTokenMu.Lock()
+		callbackAuthDisabled = !cliAuthEnabled
+		callbackTokenMu.Unlock()
+
+		// Display appropriate HTML based on CLI auth status
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = fmt.Fprint(w, successHTML)
+		if !cliAuthEnabled {
+			_, _ = fmt.Fprint(w, notEnabledHTML)
+		} else {
+			_, _ = fmt.Fprint(w, successHTML)
+		}
 		// Ensure response is flushed to client
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
-		// Now notify main goroutine (non-blocking)
+		// Notify main goroutine with full result
 		select {
-		case codeCh <- code:
-			// Success
+		case resultCh <- callbackResult{token: tokenData, cliAuthDisabled: !cliAuthEnabled}:
 		default:
-			// Select already exited (timeout/cancel); code discarded but response already sent
 		}
+	})
+
+	// API endpoint: get super admins
+	mux.HandleFunc("/api/superAdmin", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		callbackTokenMu.Lock()
+		token := callbackToken
+		callbackTokenMu.Unlock()
+		if token == nil {
+			_, _ = w.Write([]byte(`{"success":false,"errorMsg":"授权尚未完成"}`))
+			return
+		}
+		result, err := GetSuperAdmins(ctx, token.AccessToken)
+		if err != nil {
+			_, _ = fmt.Fprintf(w, `{"success":false,"errorMsg":"%s"}`, err.Error())
+			return
+		}
+		data, _ := json.Marshal(result)
+		_, _ = w.Write(data)
+	})
+
+	// API endpoint: send CLI auth apply
+	mux.HandleFunc("/api/sendApply", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		adminStaffID := r.URL.Query().Get("adminStaffId")
+		if adminStaffID == "" {
+			_, _ = w.Write([]byte(`{"success":false,"errorMsg":"缺少 adminStaffId 参数"}`))
+			return
+		}
+		callbackTokenMu.Lock()
+		token := callbackToken
+		callbackTokenMu.Unlock()
+		if token == nil {
+			_, _ = w.Write([]byte(`{"success":false,"errorMsg":"授权尚未完成"}`))
+			return
+		}
+		result, err := SendCliAuthApply(ctx, token.AccessToken, adminStaffID)
+		if err != nil {
+			_, _ = fmt.Fprintf(w, `{"success":false,"errorMsg":"%s"}`, err.Error())
+			return
+		}
+		// Mark apply as sent and save selected admin on success
+		if result.Success && result.Result {
+			callbackTokenMu.Lock()
+			callbackApplySent = true
+			callbackSelectedAdminId = adminStaffID
+			callbackTokenMu.Unlock()
+		}
+		data, _ := json.Marshal(result)
+		_, _ = w.Write(data)
+	})
+
+	// API endpoint: get current status (clientId, applySent, selectedAdminId)
+	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		callbackTokenMu.Lock()
+		applySent := callbackApplySent
+		selectedAdminId := callbackSelectedAdminId
+		callbackTokenMu.Unlock()
+		_, _ = fmt.Fprintf(w, `{"clientId":"%s","applySent":%t,"selectedAdminId":"%s"}`, p.clientID, applySent, selectedAdminId)
+	})
+
+	// API endpoint: check CLI auth enabled status
+	mux.HandleFunc("/api/cliAuthEnabled", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		callbackTokenMu.Lock()
+		token := callbackToken
+		callbackTokenMu.Unlock()
+		if token == nil {
+			_, _ = w.Write([]byte(`{"success":false,"errorMsg":"授权尚未完成"}`))
+			return
+		}
+		result, err := p.CheckCLIAuthEnabled(ctx, token.AccessToken)
+		if err != nil {
+			_, _ = fmt.Fprintf(w, `{"success":false,"errorMsg":"%s"}`, err.Error())
+			return
+		}
+		data, _ := json.Marshal(result)
+		_, _ = w.Write(data)
+	})
+
+	// Success page endpoint
+	mux.HandleFunc("/success", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(w, successHTML)
 	})
 
 	server := &http.Server{Handler: mux}
@@ -169,9 +379,9 @@ func (p *OAuthProvider) Login(ctx context.Context, force bool) (*TokenData, erro
 	timeout := time.NewTimer(5 * time.Minute)
 	defer timeout.Stop()
 
-	var authCode string
+	var result callbackResult
 	select {
-	case authCode = <-codeCh:
+	case result = <-resultCh:
 	case err := <-errCh:
 		return nil, err
 	case <-timeout.C:
@@ -180,10 +390,72 @@ func (p *OAuthProvider) Login(ctx context.Context, force bool) (*TokenData, erro
 		return nil, ctx.Err()
 	}
 
-	tokenData, err := p.exchangeCode(ctx, authCode)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", i18n.T("换取 token 失败"), err)
+	// Handle callback errors
+	if result.err != nil {
+		return nil, fmt.Errorf("%s: %w", i18n.T("换取 token 失败"), result.err)
 	}
+
+	// Handle CLI auth disabled - keep server running for user to apply
+	if result.cliAuthDisabled {
+		_, _ = fmt.Fprintln(p.output(), "")
+		_, _ = fmt.Fprintln(p.output(), i18n.T("⏳ 该组织尚未开启 CLI 数据访问权限，请在浏览器中提交授权申请..."))
+
+		// Poll for CLI auth status while waiting
+		applyTimeout := time.NewTimer(10 * time.Minute)
+		defer applyTimeout.Stop()
+		pollTicker := time.NewTicker(5 * time.Second)
+		defer pollTicker.Stop()
+
+		elapsedSeconds := 0
+		for {
+			select {
+			case <-applyTimeout.C:
+				return nil, errors.New(i18n.T("操作超时，请重新登录"))
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-pollTicker.C:
+				elapsedSeconds += 5
+
+				// Get latest token and state (user may have switched org)
+				callbackTokenMu.Lock()
+				currentToken := callbackToken
+				currentAuthDisabled := callbackAuthDisabled
+				applySent := callbackApplySent
+				callbackTokenMu.Unlock()
+
+				// Check if user switched to an org with CLI auth enabled
+				if currentToken != nil && !currentAuthDisabled {
+					_, _ = fmt.Fprintf(p.output(), "\r%s\n", i18n.T("✅ 权限已开启，继续登录..."))
+					time.Sleep(2 * time.Second)
+					result.token = currentToken
+					result.cliAuthDisabled = false
+					goto continueLogin
+				}
+
+				// Check if CLI auth is now enabled (admin approved)
+				if currentToken != nil {
+					authStatus, err := p.CheckCLIAuthEnabled(ctx, currentToken.AccessToken)
+					if err == nil && authStatus.Success && authStatus.Result.CLIAuthEnabled {
+						_, _ = fmt.Fprintf(p.output(), "\r%s\n", i18n.T("✅ 权限已开启，继续登录..."))
+						time.Sleep(2 * time.Second)
+						result.token = currentToken
+						result.cliAuthDisabled = false
+						goto continueLogin
+					}
+				}
+
+				// Show polling status based on apply state
+				if applySent {
+					_, _ = fmt.Fprintf(p.output(), "\r⏳ %s (%ds/600s)   ", i18n.T("等待管理员审批中"), elapsedSeconds)
+				} else {
+					_, _ = fmt.Fprintf(p.output(), "\r⏳ %s (%ds/600s)   ", i18n.T("等待提交申请中"), elapsedSeconds)
+				}
+			}
+		}
+	}
+
+continueLogin:
+	tokenData := result.token
 
 	// Save token data with associated client ID for refresh
 	tokenData.ClientID = p.clientID

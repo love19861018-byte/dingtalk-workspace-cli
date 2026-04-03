@@ -13,7 +13,7 @@
 
 package output
 
-import "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/validate"
+import "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/validate"
 
 // SanitizeForTerminal strips ANSI escape sequences, control characters, and
 // dangerous Unicode from text before it is printed to a terminal.
