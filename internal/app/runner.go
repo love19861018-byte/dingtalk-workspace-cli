@@ -231,6 +231,12 @@ func (r *runtimeRunner) executeInvocation(ctx context.Context, endpoint string, 
 		return executor.Result{}, err
 	}
 
+	if fn := edition.Get().ClassifyToolResult; fn != nil {
+		if editionErr := fn(callResult.Content); editionErr != nil {
+			return executor.Result{}, editionErr
+		}
+	}
+
 	if callResult.IsError {
 		diag := transport.ExtractServerDiagnosticsFromMap(callResult.Content)
 		logBusinessError(r.transport.FileLogger, "mcp_tool_error", invocation, callResult.Content, diag)

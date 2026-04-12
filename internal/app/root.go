@@ -15,6 +15,7 @@ package app
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -123,6 +124,11 @@ func flagErrorWithSuggestions(cmd *cobra.Command, err error) error {
 }
 
 func printExecutionError(root *cobra.Command, stdout, stderr io.Writer, err error) error {
+	var raw apperrors.RawStderrError
+	if stderrors.As(err, &raw) {
+		_, writeErr := fmt.Fprintln(stderr, raw.RawStderr())
+		return writeErr
+	}
 	if wantsJSONErrors(root) {
 		return apperrors.PrintJSON(stdout, err)
 	}

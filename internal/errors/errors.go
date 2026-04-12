@@ -198,11 +198,30 @@ func NewInternal(message string, opts ...Option) error {
 	return newError(CategoryInternal, message, opts...)
 }
 
+// ExitCoder is implemented by errors that provide their own exit code.
+// Edition-specific error types (e.g. PATError, CLIError) implement this
+// so the framework can resolve exit codes without importing edition packages.
+type ExitCoder interface {
+	ExitCode() int
+}
+
+// RawStderrError is implemented by errors that must output raw content
+// directly to stderr, bypassing all CLI formatting (e.g. "Error:" prefix).
+// PAT authorization errors use this to pass JSON through to the desktop runtime.
+type RawStderrError interface {
+	error
+	RawStderr() string
+}
+
 // ExitCode maps any error to a stable exit code.
 func ExitCode(err error) int {
 	var typed *Error
 	if stderrors.As(err, &typed) {
 		return typed.ExitCode()
+	}
+	var ec ExitCoder
+	if stderrors.As(err, &ec) {
+		return ec.ExitCode()
 	}
 	return 5
 }

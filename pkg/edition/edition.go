@@ -97,6 +97,13 @@ type Hooks struct {
 	// global setup (OAuth flag overrides, log level, output sink). Overlays use
 	// this for clients that bypass the MCP runner (e.g. A2A gateway).
 	AfterPersistentPreRun func(cmd *cobra.Command, args []string) error
+
+	// ClassifyToolResult is called before the framework's default business-error
+	// detection on MCP tool results. If it returns a non-nil error, that error
+	// is used instead of the generic CategoryAPI business error. Editions use
+	// this to return custom error types with specific exit codes (e.g. PAT
+	// authorization errors with exit code 4).
+	ClassifyToolResult func(content map[string]any) error
 }
 
 var (
