@@ -21,10 +21,41 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/config"
 )
+
+// debugLogMCPRequest logs MCP API request and response to ~/.dws/debug.log for debugging.
+// TODO: Remove before official release.
+func debugLogMCPRequest(endpoint string, headers map[string]string, respStatus int, respBody []byte) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	logPath := filepath.Join(homeDir, ".dws", "debug.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
+	fmt.Fprintf(f, "\n========== %s ==========\n", timestamp)
+	fmt.Fprintf(f, "Endpoint: %s\n", endpoint)
+	fmt.Fprintf(f, "Request Headers:\n")
+	for k, v := range headers {
+		if k == "x-user-access-token" && len(v) > 20 {
+			fmt.Fprintf(f, "  %s: %s...%s (len=%d)\n", k, v[:10], v[len(v)-10:], len(v))
+		} else {
+			fmt.Fprintf(f, "  %s: %s\n", k, v)
+		}
+	}
+	fmt.Fprintf(f, "Response Status: %d\n", respStatus)
+	fmt.Fprintf(f, "Response Body:\n%s\n", string(respBody))
+}
 
 func (p *OAuthProvider) exchangeCode(ctx context.Context, code string) (*TokenData, error) {
 	// Use MCP mode if clientID is from MCP server
@@ -919,14 +950,189 @@ const notEnabledHTML = `<!doctype html>
   </body>
 </html>`
 
+const accessDeniedHTML = `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>钉钉 CLI</title>
+    <style>
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+        margin: 0;
+        background: #f5f5f5;
+        padding: 20px;
+      }
+      .card {
+        width: 480px;
+        border-radius: 16px;
+        background: #ffffff;
+        box-sizing: border-box;
+        border: 1px solid #f2f2f6;
+        box-shadow: 0px 2px 4px 0px rgba(0, 0, 0, 0.12);
+        padding: 48px 24px 40px;
+        text-align: center;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        flex-direction: column;
+      }
+      .icon {
+        width: 120px;
+        height: 120px;
+        margin: 0 auto;
+        object-fit: contain;
+        display: block;
+      }
+      h1 {
+        margin: 8px 0 0;
+        font-size: 18px;
+        font-weight: 600;
+        line-height: 44px;
+        color: #181c1f;
+      }
+      p {
+        margin: 8px 0 0;
+        font-size: 14px;
+        line-height: 21px;
+        color: rgba(24, 28, 31, 0.6);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <img
+        class="icon"
+        src="https://img.alicdn.com/imgextra/i4/O1CN01fS3xxz1vbzZSGjbe0_!!6000000006192-2-tps-480-480.png"
+        alt="lock icon"
+      />
+      <h1>无权限访问</h1>
+      <p>您不在该组织的 CLI 授权人员范围内。<br />请联系组织管理员将您加入授权名单。</p>
+      <p>此页面可以关闭。</p>
+    </div>
+  </body>
+</html>`
+
+const channelDeniedHTML = `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>钉钉 CLI</title>
+    <style>
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+        margin: 0;
+        background: #f5f5f5;
+        padding: 20px;
+      }
+      .card {
+        width: 480px;
+        border-radius: 16px;
+        background: #ffffff;
+        box-sizing: border-box;
+        border: 1px solid #f2f2f6;
+        box-shadow: 0px 2px 4px 0px rgba(0, 0, 0, 0.12);
+        padding: 48px 24px 40px;
+        text-align: center;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        flex-direction: column;
+      }
+      .icon {
+        width: 120px;
+        height: 120px;
+        margin: 0 auto;
+        object-fit: contain;
+        display: block;
+      }
+      h1 {
+        margin: 8px 0 0;
+        font-size: 18px;
+        font-weight: 600;
+        line-height: 44px;
+        color: #181c1f;
+      }
+      p {
+        margin: 8px 0 0;
+        font-size: 14px;
+        line-height: 21px;
+        color: rgba(24, 28, 31, 0.6);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <img
+        class="icon"
+        src="https://img.alicdn.com/imgextra/i4/O1CN01fS3xxz1vbzZSGjbe0_!!6000000006192-2-tps-480-480.png"
+        alt="lock icon"
+      />
+      <h1>渠道未授权</h1>
+      <p>当前渠道未获得该组织授权，或组织已开启渠道管控。<br />请联系组织管理员开通渠道访问权限，或升级到最新版本的 CLI。</p>
+      <p>此页面可以关闭。</p>
+    </div>
+  </body>
+</html>`
+
 // CLIAuthStatus represents the response from /cli/cliAuthEnabled API.
 type CLIAuthStatus struct {
-	Success   bool   `json:"success"`
-	ErrorCode string `json:"errorCode,omitempty"`
-	ErrorMsg  string `json:"errorMsg,omitempty"`
-	Result    struct {
-		CLIAuthEnabled bool `json:"cliAuthEnabled"`
-	} `json:"result"`
+	Success   bool           `json:"success"`
+	ErrorCode string         `json:"errorCode,omitempty"`
+	ErrorMsg  string         `json:"errorMsg,omitempty"`
+	Result    *CLIAuthResult `json:"result"`
+}
+
+// CLIAuthResult holds the business data returned by /cli/cliAuthEnabled.
+// The server computes cliAuthEnabled by considering the org switch, userScope,
+// and channelScope together; the CLI uses it as-is.
+type CLIAuthResult struct {
+	CLIAuthEnabled  bool     `json:"cliAuthEnabled"`
+	UserScope       string   `json:"userScope,omitempty"`       // "all" | "specified" | "forbidden"
+	AllowedUsers    []string `json:"allowedUsers,omitempty"`    // staffId list when userScope="specified"
+	ChannelScope    string   `json:"channelScope,omitempty"`    // "all" | "specified"
+	AllowedChannels []string `json:"allowedChannels,omitempty"` // channelCode list when channelScope="specified"
+}
+
+// classifyDenialReason inspects a CLIAuthStatus response and returns a machine-readable
+// denial reason string. Returns "" when access is granted.
+func classifyDenialReason(status *CLIAuthStatus, currentChannel string) string {
+	if status.ErrorCode == "CHANNEL_REQUIRED" {
+		return "channel_required"
+	}
+	if status.ErrorCode == "NO_AUTH" {
+		return "no_auth"
+	}
+	if status.Result == nil || !status.Success {
+		return "unknown"
+	}
+	if status.Result.CLIAuthEnabled {
+		return ""
+	}
+	// cliAuthEnabled=false — infer reason from auxiliary fields (same priority as server)
+	if status.Result.UserScope == "forbidden" {
+		return "user_forbidden"
+	}
+	if status.Result.UserScope == "specified" {
+		return "user_not_allowed"
+	}
+	if status.Result.ChannelScope == "specified" && currentChannel != "" {
+		return "channel_not_allowed"
+	}
+	return "cli_not_enabled"
 }
 
 // SuperAdmin represents a corp super admin.
@@ -979,12 +1185,23 @@ func (p *OAuthProvider) CheckCLIAuthEnabled(ctx context.Context, accessToken str
 }
 
 func (p *OAuthProvider) doCheckCLIAuthEnabled(ctx context.Context, accessToken string) (*CLIAuthStatus, error) {
-	url := GetMCPBaseURL() + CLIAuthEnabledPath
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	reqURL := GetMCPBaseURL() + CLIAuthEnabledPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 	req.Header.Set("x-user-access-token", accessToken)
+	if ch := os.Getenv("DWS_CHANNEL"); ch != "" {
+		req.Header.Set("x-dws-channel", ch)
+	}
+
+	// Collect headers for debug logging
+	debugHeaders := map[string]string{
+		"x-user-access-token": accessToken,
+	}
+	if ch := os.Getenv("DWS_CHANNEL"); ch != "" {
+		debugHeaders["x-dws-channel"] = ch
+	}
 
 	client := p.httpClient
 	if client == nil {
@@ -1000,6 +1217,9 @@ func (p *OAuthProvider) doCheckCLIAuthEnabled(ctx context.Context, accessToken s
 	if err != nil {
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
+
+	// Log request and response for debugging (TODO: remove before release)
+	debugLogMCPRequest(reqURL, debugHeaders, resp.StatusCode, data)
 
 	var status CLIAuthStatus
 	if err := json.Unmarshal(data, &status); err != nil {

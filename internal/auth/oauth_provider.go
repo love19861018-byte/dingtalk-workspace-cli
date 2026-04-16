@@ -236,19 +236,30 @@ func (p *OAuthProvider) Login(ctx context.Context, force bool) (*TokenData, erro
 
 		// Check CLI auth enabled status (fail-closed: treat errors as disabled)
 		authStatus, statusErr := p.CheckCLIAuthEnabled(ctx, tokenData.AccessToken)
-		cliAuthEnabled := statusErr == nil && authStatus.Success && authStatus.Result.CLIAuthEnabled
+		var denialReason string
+		if statusErr != nil {
+			denialReason = "unknown"
+		} else {
+			denialReason = classifyDenialReason(authStatus, os.Getenv("DWS_CHANNEL"))
+		}
+		cliAuthEnabled := denialReason == ""
 
 		// Update CLI auth disabled state
 		callbackTokenMu.Lock()
 		callbackAuthDisabled = !cliAuthEnabled
 		callbackTokenMu.Unlock()
 
-		// Display appropriate HTML based on CLI auth status
+		// Display appropriate HTML based on auth status and denial reason
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if !cliAuthEnabled {
-			_, _ = fmt.Fprint(w, notEnabledHTML)
-		} else {
+		switch {
+		case cliAuthEnabled:
 			_, _ = fmt.Fprint(w, successHTML)
+		case denialReason == "user_forbidden" || denialReason == "user_not_allowed":
+			_, _ = fmt.Fprint(w, accessDeniedHTML)
+		case denialReason == "channel_not_allowed" || denialReason == "channel_required":
+			_, _ = fmt.Fprint(w, channelDeniedHTML)
+		default:
+			_, _ = fmt.Fprint(w, notEnabledHTML)
 		}
 		// Ensure response is flushed to client
 		if f, ok := w.(http.Flusher); ok {
@@ -435,7 +446,7 @@ func (p *OAuthProvider) Login(ctx context.Context, force bool) (*TokenData, erro
 				// Check if CLI auth is now enabled (admin approved)
 				if currentToken != nil {
 					authStatus, err := p.CheckCLIAuthEnabled(ctx, currentToken.AccessToken)
-					if err == nil && authStatus.Success && authStatus.Result.CLIAuthEnabled {
+					if err == nil && classifyDenialReason(authStatus, os.Getenv("DWS_CHANNEL")) == "" {
 						_, _ = fmt.Fprintf(p.output(), "\r%s\n", i18n.T("✅ 权限已开启，继续登录..."))
 						time.Sleep(2 * time.Second)
 						result.token = currentToken

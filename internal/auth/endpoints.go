@@ -38,6 +38,16 @@ func init() {
 		DefaultValue: "(内置)",
 		Sensitive:    true,
 	})
+	configmeta.Register(configmeta.ConfigItem{
+		Name:        "DWS_CHANNEL",
+		Category:    configmeta.CategoryExternal,
+		Description: "第三方渠道编码 (channelCode)，如 Qoderwork",
+	})
+	configmeta.Register(configmeta.ConfigItem{
+		Name:        "DWS_CHANNEL_CLIENT_ID",
+		Category:    configmeta.CategoryExternal,
+		Description: "第三方渠道在组织内创建的应用 clientID",
+	})
 }
 
 const (

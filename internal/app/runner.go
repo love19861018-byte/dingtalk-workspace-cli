@@ -88,6 +88,10 @@ const (
 	envDingtalkTraceID   = "DINGTALK_TRACE_ID"
 	envDingtalkSessionID = "DINGTALK_SESSION_ID"
 	envDingtalkMessageID = "DINGTALK_MESSAGE_ID"
+
+	// Environment variables for third-party channel integration
+	envDWSChannel         = "DWS_CHANNEL"
+	envDWSChannelClientID = "DWS_CHANNEL_CLIENT_ID"
 )
 
 func newCommandRunnerWithFlags(loader cli.CatalogLoader, flags *GlobalFlags) executor.Runner {
@@ -449,6 +453,18 @@ func resolveIdentityHeaders() map[string]string {
 			headers[k] = v
 		}
 	}
+
+	// Inject third-party channel headers
+	channelHeaders := map[string]string{
+		"x-dws-channel":           os.Getenv(envDWSChannel),
+		"x-dws-channel-client-id": os.Getenv(envDWSChannelClientID),
+	}
+	for k, v := range channelHeaders {
+		if v != "" {
+			headers[k] = v
+		}
+	}
+
 	if fn := edition.Get().MergeHeaders; fn != nil {
 		headers = fn(headers)
 	}
