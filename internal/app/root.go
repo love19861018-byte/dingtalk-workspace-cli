@@ -1036,8 +1036,23 @@ func loadPlugins(engine *pipeline.Engine, runner executor.Runner) []*cobra.Comma
 
 	// 0a. Ensure default managed plugins are installed (first-run bootstrap).
 	updater := plugin.NewUpdater(pluginLoader.PluginsDir, RawVersion())
-	accessToken, tokenErr := loadSkillAccessToken()
-	if tokenErr == nil && accessToken != "" {
+	// Load TokenData once; reuse for plugin bootstrap, updates, and stdio injection.
+	tokenData, _ := authpkg.LoadTokenData(defaultConfigDir())
+	var userCtx *plugin.UserContext
+	if tokenData != nil {
+		// Inject user context if either UserID or CorpID is present.
+		if tokenData.UserID != "" || tokenData.CorpID != "" {
+		userCtx = &plugin.UserContext{
+			UserID: tokenData.UserID,
+			CorpID: tokenData.CorpID,
+		}
+	}
+	}
+	accessToken := ""
+	if tokenData != nil && tokenData.IsAccessTokenValid() {
+		accessToken = tokenData.AccessToken
+	}
+	if accessToken != "" {
 		bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		installed := updater.EnsureManaged(bootstrapCtx, accessToken, os.Stderr)
 		bootstrapCancel()
@@ -1121,7 +1136,7 @@ func loadPlugins(engine *pipeline.Engine, runner executor.Runner) []*cobra.Comma
 
 	// 4. Start stdio MCP servers, discover tools, and build CLI commands
 	for _, p := range allPlugins {
-		for _, sc := range p.StdioClients() {
+		for _, sc := range p.StdioClients(userCtx) {
 			// Use background context so the subprocess lives for the CLI
 			// process lifetime (not killed by a short timeout).
 			if err := sc.Client.Start(context.Background()); err != nil {
