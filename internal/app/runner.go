@@ -202,7 +202,10 @@ func (r *runtimeRunner) executeInvocation(ctx context.Context, endpoint string, 
 			retErr == nil, time.Since(invokeStart), errCat, errReason)
 	}()
 
-	authToken := r.resolveAuthToken(ctx)
+	authToken, authErr := r.resolveAuthToken(ctx)
+	if authErr != nil {
+		return executor.Result{}, authErr
+	}
 
 	var timeoutSec int
 	if r.globalFlags != nil {
@@ -266,7 +269,10 @@ func (r *runtimeRunner) executeInvocation(ctx context.Context, endpoint string, 
 	if err != nil {
 		if isAuthError(err) {
 			if fn := edition.Get().OnAuthError; fn != nil {
-				_ = fn(defaultConfigDir(), err)
+				if overrideErr := fn(defaultConfigDir(), err); overrideErr != nil {
+					captureRuntimeFailure(invocation, err, overrideErr)
+					return executor.Result{}, overrideErr
+				}
 			}
 		}
 		captureRuntimeFailure(invocation, err, err)
@@ -322,12 +328,20 @@ func (r *runtimeRunner) executeInvocation(ctx context.Context, endpoint string, 
 	return executor.Result{Invocation: invocation, Response: response}, nil
 }
 
-func (r *runtimeRunner) resolveAuthToken(ctx context.Context) string {
+func (r *runtimeRunner) resolveAuthToken(ctx context.Context) (string, error) {
 	explicitToken := ""
 	if r != nil && r.globalFlags != nil {
 		explicitToken = r.globalFlags.Token
 	}
-	return resolveRuntimeAuthToken(ctx, explicitToken)
+	if token := strings.TrimSpace(explicitToken); token != "" {
+		return token, nil
+	}
+	if tp := edition.Get().TokenProvider; tp != nil {
+		return tp(ctx, func() (string, error) {
+			return resolveAccessTokenFromDir(ctx, defaultConfigDir())
+		})
+	}
+	return getCachedRuntimeToken(ctx), nil
 }
 
 func resolveRuntimeAuthToken(ctx context.Context, explicitToken string) string {
