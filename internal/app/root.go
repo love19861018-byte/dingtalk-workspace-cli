@@ -52,7 +52,14 @@ type outputFileContextKey struct{}
 const recoveryEventStderrPrefix = "RECOVERY_EVENT_ID="
 
 // Execute runs the root command and returns the process exit code.
-func Execute() int {
+func Execute() (exitCode int) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "Error: internal panic: %v\n", r)
+			exitCode = 5
+		}
+	}()
+
 	timing := NewTimingCollector()
 	defer func() {
 		timing.PrintIfEnabled()
