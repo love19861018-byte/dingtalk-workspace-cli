@@ -1044,11 +1044,11 @@ func loadPlugins(engine *pipeline.Engine, runner executor.Runner) []*cobra.Comma
 	if tokenData != nil {
 		// Inject user context if either UserID or CorpID is present.
 		if tokenData.UserID != "" || tokenData.CorpID != "" {
-		userCtx = &plugin.UserContext{
-			UserID: tokenData.UserID,
-			CorpID: tokenData.CorpID,
+			userCtx = &plugin.UserContext{
+				UserID: tokenData.UserID,
+				CorpID: tokenData.CorpID,
+			}
 		}
-	}
 	}
 	accessToken := ""
 	if tokenData != nil && tokenData.IsAccessTokenValid() {
