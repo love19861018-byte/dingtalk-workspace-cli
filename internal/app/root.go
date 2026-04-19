@@ -767,6 +767,43 @@ func cacheStoreFromEnv() *cache.Store {
 	return cache.NewStore(cacheDir)
 }
 
+// pluginColdTimeouts holds the cold-path discovery budget for plugin MCP
+// servers. Timeouts only apply to the *first* discovery for a given
+// plugin/server; subsequent startups take the warm cache path and bypass
+// the network entirely.
+type pluginColdTimeouts struct {
+	httpNoAuth time.Duration
+	httpAuth   time.Duration
+	stdio      time.Duration
+}
+
+// resolvePluginColdTimeouts returns the cold-discovery budget for plugin MCP
+// servers, applying the DWS_PLUGIN_COLD_TIMEOUT override when set. Defaults
+// are tuned so healthy cross-region HTTP endpoints succeed on a cold start
+// and Python/Node-based stdio plugins have headroom for interpreter load,
+// while an unreachable host still surrenders in bounded time.
+func resolvePluginColdTimeouts() pluginColdTimeouts {
+	t := pluginColdTimeouts{
+		httpNoAuth: 1 * time.Second,
+		httpAuth:   1500 * time.Millisecond,
+		stdio:      2 * time.Second,
+	}
+	raw := strings.TrimSpace(os.Getenv(cli.PluginColdTimeoutEnv))
+	if raw == "" {
+		return t
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		slog.Warn("plugin: ignoring invalid DWS_PLUGIN_COLD_TIMEOUT",
+			"value", raw, "error", err)
+		return t
+	}
+	t.httpNoAuth = d
+	t.httpAuth = d
+	t.stdio = d
+	return t
+}
+
 func configureOutputSink(cmd *cobra.Command) error {
 	if local := cmd.LocalFlags().Lookup("output"); local != nil {
 		return nil
@@ -1132,6 +1169,15 @@ func loadPlugins(engine *pipeline.Engine, runner executor.Runner) []*cobra.Comma
 		}
 	}
 
+	// Share one cache.Store across all discovery goroutines. Each goroutine
+	// writes to a distinct serverKey path ("tools/<plugin>_<server>.json") with
+	// atomic tmp+rename, so concurrent writes to different keys never collide
+	// on the filesystem. Global in-process registries (AppendDynamicServer,
+	// RegisterStdioClient) carry their own sync.Mutex; see direct_runtime.go
+	// and stdio_registry.go.
+	sharedStore := cacheStoreFromEnv()
+	coldTimeouts := resolvePluginColdTimeouts()
+
 	// Fan out HTTP and stdio discovery in parallel. Each goroutine resolves
 	// its cache hit locally (no network) or runs a bounded cold-path probe.
 	// Wall-clock cost ≈ max(individual plugin latencies), not the sum.
@@ -1142,14 +1188,14 @@ func loadPlugins(engine *pipeline.Engine, runner executor.Runner) []*cobra.Comma
 		wg.Add(1)
 		go func(idx int, ps pluginServer) {
 			defer wg.Done()
-			httpResults[idx] = registerHTTPServer(ps.plugin, ps.srv, tc, runner)
+			httpResults[idx] = registerHTTPServer(ps.plugin, ps.srv, tc, runner, sharedStore, coldTimeouts)
 		}(i, ps)
 	}
 	for i, e := range stdioEntries {
 		wg.Add(1)
 		go func(idx int, e stdioEntry) {
 			defer wg.Done()
-			stdioResults[idx] = registerStdioServer(e.plugin, e.sc, runner)
+			stdioResults[idx] = registerStdioServer(e.plugin, e.sc, runner, sharedStore, coldTimeouts)
 		}(i, e)
 	}
 	wg.Wait()
@@ -1215,8 +1261,7 @@ func pluginCacheKey(pluginName, serverKey string) string {
 // a dedicated transport.Client is created with the plugin's Bearer token and
 // trusted domains so that third-party MCP servers requiring independent
 // authentication (e.g. Alibaba Cloud Bailian) can be discovered at startup.
-func registerHTTPServer(p *plugin.Plugin, srv market.ServerDescriptor, tc *transport.Client, runner executor.Runner) []*cobra.Command {
-	store := cacheStoreFromEnv()
+func registerHTTPServer(p *plugin.Plugin, srv market.ServerDescriptor, tc *transport.Client, runner executor.Runner, store *cache.Store, timeouts pluginColdTimeouts) []*cobra.Command {
 	partition := config.DefaultPartition
 	cacheKey := pluginCacheKey(p.Manifest.Name, srv.Key)
 
@@ -1230,7 +1275,7 @@ func registerHTTPServer(p *plugin.Plugin, srv market.ServerDescriptor, tc *trans
 	// Cold cache: synchronous discovery. Persist the outcome even on failure
 	// (empty tools == negative cache) so the next invocation takes the fast
 	// path regardless of endpoint health.
-	tools := discoverHTTPTools(p, srv, tc)
+	tools := discoverHTTPTools(p, srv, tc, timeouts)
 	_ = store.SaveTools(partition, cacheKey, cache.ToolsSnapshot{
 		ServerKey: cacheKey,
 		Tools:     tools,
@@ -1241,19 +1286,17 @@ func registerHTTPServer(p *plugin.Plugin, srv market.ServerDescriptor, tc *trans
 // discoverHTTPTools performs the blocking Initialize + ListTools handshake
 // for an HTTP MCP server and returns the discovered tools. Returns nil on
 // any transport/protocol error; errors are logged at Debug level.
-func discoverHTTPTools(p *plugin.Plugin, srv market.ServerDescriptor, tc *transport.Client) []transport.ToolDescriptor {
+func discoverHTTPTools(p *plugin.Plugin, srv market.ServerDescriptor, tc *transport.Client, timeouts pluginColdTimeouts) []transport.ToolDescriptor {
 	// Cold-path budget. An unreachable endpoint will burn the full window
 	// via the TCP dial timeout; a healthy localhost/third-party endpoint
 	// typically responds in <200 ms. Third-party servers with auth get a
-	// slightly larger window to accommodate TLS + auth RTT. The outcome is
-	// persisted as a negative cache so subsequent startups (80 ms warm) are
-	// unaffected. See issue #119.
-	timeout := 500 * time.Millisecond
+	// slightly larger window to accommodate TLS + auth RTT. Operators with
+	// cross-region endpoints can relax the window via DWS_PLUGIN_COLD_TIMEOUT.
+	// The outcome is persisted as a negative cache so subsequent startups
+	// (80 ms warm) are unaffected. See issue #119.
+	timeout := timeouts.httpNoAuth
 	if len(srv.AuthHeaders) > 0 {
-		// Third-party servers with auth may include a TLS + token RTT in
-		// their first response. 700 ms accommodates that while still
-		// surrendering quickly on unreachable hosts.
-		timeout = 700 * time.Millisecond
+		timeout = timeouts.httpAuth
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -1401,8 +1444,7 @@ func registerPluginAuthFromHeaders(srv market.ServerDescriptor) {
 // for this plugin/server, skip the Initialize + ListTools RPC round-trip and
 // rebuild commands directly from the snapshot. Cold cache falls back to
 // synchronous discovery with a 4s cap and persists the outcome.
-func registerStdioServer(p *plugin.Plugin, sc plugin.StdioServerClient, runner executor.Runner) []*cobra.Command {
-	store := cacheStoreFromEnv()
+func registerStdioServer(p *plugin.Plugin, sc plugin.StdioServerClient, runner executor.Runner, store *cache.Store, timeouts pluginColdTimeouts) []*cobra.Command {
 	partition := config.DefaultPartition
 	cacheKey := pluginCacheKey(p.Manifest.Name, sc.Key)
 
@@ -1413,7 +1455,7 @@ func registerStdioServer(p *plugin.Plugin, sc plugin.StdioServerClient, runner e
 		return buildStdioCommands(p, sc, snapshot.Tools, runner)
 	}
 
-	tools := discoverStdioTools(p, sc)
+	tools := discoverStdioTools(p, sc, timeouts)
 	_ = store.SaveTools(partition, cacheKey, cache.ToolsSnapshot{
 		ServerKey: cacheKey,
 		Tools:     tools,
@@ -1423,11 +1465,11 @@ func registerStdioServer(p *plugin.Plugin, sc plugin.StdioServerClient, runner e
 
 // discoverStdioTools performs the blocking Initialize + ListTools handshake
 // on a stdio MCP subprocess. Returns nil on any error (logged at Warn level).
-// The local subprocess-exec + handshake completes well under 1 s on any
-// healthy plugin; tighter than the HTTP budget because there is no network
-// dial to amortise.
-func discoverStdioTools(p *plugin.Plugin, sc plugin.StdioServerClient) []transport.ToolDescriptor {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+// The default 2s budget comfortably accommodates Python/Node runtimes whose
+// interpreter + dependency load dominates the first response. Operators with
+// heavier startup chains can relax further via DWS_PLUGIN_COLD_TIMEOUT.
+func discoverStdioTools(p *plugin.Plugin, sc plugin.StdioServerClient, timeouts pluginColdTimeouts) []transport.ToolDescriptor {
+	ctx, cancel := context.WithTimeout(context.Background(), timeouts.stdio)
 	defer cancel()
 
 	if _, err := sc.Client.Initialize(ctx); err != nil {
