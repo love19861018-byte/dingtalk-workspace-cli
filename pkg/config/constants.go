@@ -110,32 +110,21 @@ const (
 // ── Plugin system ──────────────────────────────────────────────────────
 
 const (
-	// PluginManagedDir is the subdirectory under ~/.dws/plugins/ for
-	// official (DingTalk-Real-AI) plugins that are auto-pulled.
+	// PluginManagedDir is a legacy subdirectory under ~/.dws/plugins/
+	// retained so plugins installed by older CLI versions remain loadable.
+	// New installs always go to PluginUserDir; there is no privilege
+	// associated with this directory anymore.
 	PluginManagedDir = "managed"
 
-	// PluginUserDir is the subdirectory under ~/.dws/plugins/ for
-	// user-installed third-party plugins.
+	// PluginUserDir is the subdirectory under ~/.dws/plugins/ where all
+	// third-party plugins are installed. Every plugin — whether authored
+	// by the DingTalk team or anyone else — lives here with equal status.
 	PluginUserDir = "user"
 
 	// PluginDataDir is the subdirectory under ~/.dws/plugins/ for
 	// plugin persistent data that survives across version updates.
 	PluginDataDir = "data"
 
-	// PluginUpdateCheckInterval is how often to check for official
-	// plugin updates (at most once per interval per CLI invocation).
-	PluginUpdateCheckInterval = 1 * time.Hour
-
 	// PluginHookTimeout is the default timeout for plugin hook commands.
 	PluginHookTimeout = 30 * time.Second
-
-	// OfficialPluginWorkspace is the workspace name that identifies
-	// official plugins. Plugins under this workspace are auto-pulled.
-	OfficialPluginWorkspace = "DingTalk-Real-AI"
 )
-
-// DefaultManagedPlugins lists the official plugins that should be
-// automatically pulled on first run if not already present locally.
-// Each entry is the short plugin name (without the workspace prefix);
-// the full qualified name is OfficialPluginWorkspace + "/" + name.
-var DefaultManagedPlugins = []string{}

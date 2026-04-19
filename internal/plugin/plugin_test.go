@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -402,7 +401,10 @@ func TestLoaderLoadManaged(t *testing.T) {
 	}
 }
 
-func TestRemoveManagedPluginBlocked(t *testing.T) {
+// TestRemoveLegacyManagedPlugin ensures plugins that were installed under
+// the legacy ~/.dws/plugins/managed/ directory are now freely removable
+// — the old "cannot be removed" privilege has been dropped.
+func TestRemoveLegacyManagedPlugin(t *testing.T) {
 	dir := t.TempDir()
 	managedDir := filepath.Join(dir, "managed", "conference")
 	if err := os.MkdirAll(managedDir, 0o755); err != nil {
@@ -413,12 +415,11 @@ func TestRemoveManagedPluginBlocked(t *testing.T) {
 	}
 
 	loader := &Loader{PluginsDir: dir, CLIVersion: "1.0.0"}
-	err := loader.RemovePlugin("conference", false)
-	if err == nil {
-		t.Fatal("expected error when removing managed plugin")
+	if err := loader.RemovePlugin("conference", false); err != nil {
+		t.Fatalf("unexpected error removing legacy managed plugin: %v", err)
 	}
-	if !contains(err.Error(), "managed plugin") {
-		t.Errorf("error message should mention managed plugin, got: %v", err)
+	if _, err := os.Stat(managedDir); !os.IsNotExist(err) {
+		t.Errorf("managed plugin dir should be removed, stat err = %v", err)
 	}
 }
 
@@ -491,32 +492,6 @@ func TestParseGitURL(t *testing.T) {
 				if repo != tt.wantRepo {
 					t.Errorf("repo = %q, want %q", repo, tt.wantRepo)
 				}
-			}
-		})
-	}
-}
-
-func TestPromptUpdate(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  bool
-	}{
-		{"empty = yes", "\n", true},
-		{"y = yes", "y\n", true},
-		{"Y = yes", "Y\n", true},
-		{"yes = yes", "yes\n", true},
-		{"n = no", "n\n", false},
-		{"no = no", "no\n", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var buf strings.Builder
-			r := strings.NewReader(tt.input)
-			got := promptUpdate(&buf, r, "test-plugin", "1.0.0", "2.0.0", "")
-			if got != tt.want {
-				t.Errorf("promptUpdate() = %v, want %v", got, tt.want)
 			}
 		})
 	}

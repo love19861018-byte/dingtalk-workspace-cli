@@ -169,7 +169,7 @@ func newPluginEnableCommand() *cobra.Command {
 func newPluginDisableCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:               "disable <name>",
-		Short:             "Disable a plugin (managed plugins can be disabled but not removed)",
+		Short:             "Disable a plugin",
 		Args:              cobra.ExactArgs(1),
 		DisableAutoGenTag: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -186,7 +186,7 @@ func newPluginDisableCommand() *cobra.Command {
 func newPluginRemoveCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "remove <name>",
-		Short:             "Remove a user plugin (managed plugins cannot be removed)",
+		Short:             "Remove an installed plugin",
 		Args:              cobra.ExactArgs(1),
 		DisableAutoGenTag: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -231,20 +231,13 @@ func newPluginCreateCommand() *cobra.Command {
 		Use:   "create <name>",
 		Short: "Scaffold a new plugin directory",
 		Example: `  dws plugin create my-tool
-  dws plugin create my-tool --type managed --description "My awesome tool"`,
+  dws plugin create my-tool --description "My awesome tool"`,
 		Args:              cobra.ExactArgs(1),
 		DisableAutoGenTag: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			desc, _ := cmd.Flags().GetString("description")
-			pluginType, _ := cmd.Flags().GetString("type")
-
-			if pluginType == "" {
-				pluginType = "user"
-			}
-			if pluginType != "managed" && pluginType != "user" {
-				return apperrors.NewValidation("type must be 'managed' or 'user'")
-			}
+			pluginType := "user"
 
 			// Validate name format
 			m := &plugin.Manifest{Name: name, Version: "0.1.0", Type: pluginType}
@@ -352,7 +345,6 @@ Use this skill when the user mentions:
 		},
 	}
 	cmd.Flags().String("description", "", "Plugin description")
-	cmd.Flags().String("type", "user", "Plugin type: managed or user")
 	return cmd
 }
 

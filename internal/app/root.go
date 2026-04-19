@@ -1036,9 +1036,7 @@ func loadPlugins(engine *pipeline.Engine, runner executor.Runner) []*cobra.Comma
 	// precedence (InjectPluginConfigEnv skips already-set keys).
 	pluginLoader.InjectPluginConfigEnv()
 
-	// 0a. Ensure default managed plugins are installed (first-run bootstrap).
-	updater := plugin.NewUpdater(pluginLoader.PluginsDir, RawVersion())
-	// Load TokenData once; reuse for plugin bootstrap, updates, and stdio injection.
+	// Load TokenData once; reused for stdio injection below.
 	tokenData, _ := authpkg.LoadTokenData(defaultConfigDir())
 	var userCtx *plugin.UserContext
 	if tokenData != nil {
@@ -1050,28 +1048,9 @@ func loadPlugins(engine *pipeline.Engine, runner executor.Runner) []*cobra.Comma
 			}
 		}
 	}
-	accessToken := ""
-	if tokenData != nil && tokenData.IsAccessTokenValid() {
-		accessToken = tokenData.AccessToken
-	}
-	if accessToken != "" {
-		bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		installed := updater.EnsureManaged(bootstrapCtx, accessToken, os.Stderr)
-		bootstrapCancel()
-		if len(installed) > 0 {
-			slog.Debug("plugin: bootstrapped managed plugins", "names", installed)
-		}
 
-		// 0b. Check for managed plugin updates (non-blocking, best-effort).
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		updated := updater.CheckAndUpdate(ctx, accessToken, os.Stderr)
-		cancel()
-		if len(updated) > 0 {
-			slog.Debug("plugin: updated managed plugins", "names", updated)
-		}
-	}
-
-	// 1. Load official plugins (always enabled)
+	// 1. Load plugins from the legacy managed/ directory (backward compat
+	//    for plugins installed by older CLI builds).
 	managedPlugins := pluginLoader.LoadManaged()
 
 	// 2. Load user plugins (per settings.json)

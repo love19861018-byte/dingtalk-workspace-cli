@@ -386,16 +386,10 @@ func (l *Loader) InstallFromGit(gitURL string) (*Plugin, error) {
 		return nil, fmt.Errorf("plugin validation failed: %w", err)
 	}
 
-	// Determine install path based on workspace.
-	var destDir string
-	var isManaged bool
-	if workspace == config.OfficialPluginWorkspace {
-		destDir = filepath.Join(l.PluginsDir, config.PluginManagedDir, manifest.Name)
-		isManaged = true
-	} else {
-		destDir = filepath.Join(l.PluginsDir, config.PluginUserDir, workspace, manifest.Name)
-		isManaged = false
-	}
+	// All plugins install to the user directory with workspace nesting:
+	// ~/.dws/plugins/user/{workspace}/{name}/. There is no privileged
+	// workspace — every plugin is third-party.
+	destDir := filepath.Join(l.PluginsDir, config.PluginUserDir, workspace, manifest.Name)
 
 	// Remove .git directory before copying.
 	_ = os.RemoveAll(filepath.Join(cloneDir, ".git"))
@@ -413,15 +407,13 @@ func (l *Loader) InstallFromGit(gitURL string) (*Plugin, error) {
 		}
 	}
 
-	if !isManaged {
-		qualifiedName := workspace + "/" + manifest.Name
-		l.setPluginEnabled(qualifiedName, true)
-	}
+	qualifiedName := workspace + "/" + manifest.Name
+	l.setPluginEnabled(qualifiedName, true)
 
 	return &Plugin{
 		Manifest:  *manifest,
 		Root:      destDir,
-		IsManaged: isManaged,
+		IsManaged: false,
 	}, nil
 }
 
@@ -471,15 +463,19 @@ func parseGitURL(gitURL string) (workspace, repoName string, err error) {
 	return segments[len(segments)-2], segments[len(segments)-1], nil
 }
 
-// RemovePlugin removes a user plugin. Returns an error if it's managed.
+// RemovePlugin removes an installed plugin by name. It searches both the
+// user and the legacy managed directories; all plugins are equally
+// removable.
 func (l *Loader) RemovePlugin(name string, keepData bool) error {
-	// Check managed first — official plugins cannot be removed.
-	managedDir := filepath.Join(l.PluginsDir, "managed", name)
-	if _, err := os.Stat(managedDir); err == nil {
-		return fmt.Errorf("%s is a managed plugin (DingTalk-Real-AI/%s) and cannot be removed.\n   To disable it, run: dws plugin disable %s", name, name, name)
-	}
-
 	pluginDir := l.findUserPluginDir(name)
+	if pluginDir == "" {
+		// Fall back to legacy managed/ directory (for plugins installed
+		// by older CLI builds that wrote under ~/.dws/plugins/managed/).
+		legacyDir := filepath.Join(l.PluginsDir, config.PluginManagedDir, name)
+		if _, err := os.Stat(filepath.Join(legacyDir, "plugin.json")); err == nil {
+			pluginDir = legacyDir
+		}
+	}
 	if pluginDir == "" {
 		return fmt.Errorf("plugin %q not found", name)
 	}
@@ -489,7 +485,7 @@ func (l *Loader) RemovePlugin(name string, keepData bool) error {
 	}
 
 	if !keepData {
-		dataDir := filepath.Join(l.PluginsDir, "data", name)
+		dataDir := filepath.Join(l.PluginsDir, config.PluginDataDir, name)
 		_ = os.RemoveAll(dataDir)
 	}
 
